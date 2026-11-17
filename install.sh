@@ -30,6 +30,12 @@ if [ ! -f /etc/udev/rules.d/60-whisper-dictate-uinput.rules ]; then
   sudo install -m 644 "$REPO_DIR/packaging/60-whisper-dictate-uinput.rules" /etc/udev/rules.d/
   sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=uinput || true
 fi
+# udevadm trigger doesn't always re-apply permissions to an existing node,
+# so set them directly for this boot (the rule covers future boots).
+if [ -e /dev/uinput ] && [ "$(stat -c %G /dev/uinput)" != input ]; then
+  sudo modprobe uinput 2>/dev/null || true
+  sudo chgrp input /dev/uinput && sudo chmod 660 /dev/uinput
+fi
 
 # 3. Python environment ------------------------------------------------------
 say "Creating Python environment in $VENV"
@@ -66,7 +72,8 @@ chmod +x "$BIN_DIR/whisper-dictate"
 install -m 644 "$REPO_DIR/packaging/whisper-dictate.service" "$UNIT_DIR/"
 systemctl --user daemon-reload
 if systemctl --user list-unit-files ydotool.service >/dev/null 2>&1; then
-  systemctl --user enable --now ydotool.service || warn "could not start ydotool.service"
+  systemctl --user reset-failed ydotool.service 2>/dev/null || true
+  systemctl --user enable ydotool.service || warn "could not enable ydotool.service"
 fi
 systemctl --user enable whisper-dictate.service
 
@@ -74,8 +81,9 @@ say "Installed."
 echo "  Config:   ${XDG_CONFIG_HOME:-$HOME/.config}/whisper-dictate/config.toml"
 echo "  Check:    whisper-dictate doctor"
 if [ "${NEED_RELOGIN:-0}" = 1 ]; then
-  warn "Log out and back in (group change), then dictation starts automatically."
+  warn "Reboot (or log out and back in) so the 'input' group applies; dictation then starts automatically."
 else
+  systemctl --user restart ydotool.service 2>/dev/null || true
   systemctl --user restart whisper-dictate.service
   echo "  Running:  press Ctrl+Alt+Space, speak, press it again."
 fi
