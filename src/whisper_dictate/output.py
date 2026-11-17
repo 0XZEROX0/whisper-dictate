@@ -72,10 +72,25 @@ def _ydotool_env() -> dict:
     return env
 
 
-def _run(cmd: list[str], *, input: str | None = None, env: dict | None = None) -> None:
-    proc = subprocess.run(cmd, input=input, text=True, capture_output=True, env=env)
+def _run(cmd: list[str], *, input: str | None = None, env: dict | None = None,
+         timeout: float = 15) -> None:
+    proc = subprocess.run(cmd, input=input, text=True, capture_output=True, env=env, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed: {(proc.stderr or proc.stdout).strip()}")
+
+
+def _run_detached_output(cmd: list[str], *, input: str, timeout: float = 5) -> None:
+    """Run a clipboard tool without capturing its output.
+
+    wl-copy and xclip fork a background process that keeps serving the
+    clipboard. If we captured stdout/stderr we'd wait for that process to
+    close the pipes, which only happens when something else is copied, so
+    dictation would hang in "transcribing" forever.
+    """
+    proc = subprocess.run(cmd, input=input, text=True, timeout=timeout,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{cmd[0]} failed with exit code {proc.returncode}")
 
 
 class Typer:
@@ -110,11 +125,11 @@ class Typer:
 
 def copy_to_clipboard(text: str, session: SessionInfo) -> None:
     if session.session_type == "wayland" and shutil.which("wl-copy"):
-        _run(["wl-copy", "--", text])
+        _run_detached_output(["wl-copy"], input=text)
     elif shutil.which("xclip"):
-        _run(["xclip", "-selection", "clipboard"], input=text)
+        _run_detached_output(["xclip", "-selection", "clipboard"], input=text)
     elif shutil.which("xsel"):
-        _run(["xsel", "--clipboard", "--input"], input=text)
+        _run_detached_output(["xsel", "--clipboard", "--input"], input=text)
     else:
         raise RuntimeError("no clipboard tool found (install wl-clipboard or xclip)")
 

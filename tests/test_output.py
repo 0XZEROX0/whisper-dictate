@@ -48,3 +48,19 @@ def test_ydotool_pastes_non_ascii(monkeypatch):
     t.type("مرحبا ")
     t.type("café ")
     assert [m for m, _ in used] == ["ydotool", "clipboard", "clipboard"]
+
+
+def test_clipboard_copy_does_not_wait_for_forked_server(tmp_path, monkeypatch):
+    """wl-copy forks a child that keeps running; copying must still return."""
+    import os
+    import time
+
+    from whisper_dictate.output import copy_to_clipboard
+
+    fake = tmp_path / "wl-copy"
+    fake.write_text("#!/bin/sh\ncat > /dev/null\n( sleep 30 ) &\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    t0 = time.monotonic()
+    copy_to_clipboard("مرحبا", s("wayland", "gnome"))
+    assert time.monotonic() - t0 < 3
