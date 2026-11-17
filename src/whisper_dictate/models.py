@@ -20,11 +20,28 @@ class ModelInfo:
     note: str
     languages: tuple = ()   # empty = any language
     source: str = ""        # Hugging Face repo, for fine-tuned models
+    title: str = ""         # display name; derived from the name if empty
+
+    @property
+    def label(self) -> str:
+        if self.title:
+            return self.title
+        base = self.name.removesuffix(".en")
+        if base in _TITLES:
+            return _TITLES[base]
+        return base.removeprefix("faster-whisper-").replace("-", " ").replace("_", " ").title()
+
+    @property
+    def display(self) -> str:
+        return f"{self.label}  ·  {self.size}" if self.size else self.label
 
     @property
     def english_only(self) -> bool:
         return self.name.endswith(".en")
 
+
+_TITLES = {"tiny": "Tiny", "base": "Base", "small": "Small", "medium": "Medium",
+           "large-v3-turbo": "Large turbo", "large-v3": "Large"}
 
 MODELS = [
     ModelInfo("tiny.en", "75 MB", "fastest, rough"),
@@ -56,10 +73,12 @@ LANGUAGES = [
 FINE_TUNED = [
     ModelInfo("egyptian-turbo", "1.6 GB",
               "large-v3-turbo fine-tuned on Egyptian Arabic; keeps English words in English",
-              languages=("ar",), source="mohammedaly22/whisper-large-v3-turbo-egyptian-code-switching"),
+              languages=("ar",), source="mohammedaly22/whisper-large-v3-turbo-egyptian-code-switching",
+              title="Egyptian Arabic"),
     ModelInfo("arabic-dialects-turbo", "1.6 GB",
               "large-v3-turbo fine-tuned on Arabic dialects incl. Egyptian",
-              languages=("ar",), source="oddadmix/whisper-large-v3-turbo-arabic-dialectal"),
+              languages=("ar",), source="oddadmix/whisper-large-v3-turbo-arabic-dialectal",
+              title="Arabic dialects"),
 ]
 
 
@@ -83,7 +102,8 @@ def installed_custom_models() -> list[ModelInfo]:
             except (OSError, ValueError):
                 pass
         found.append(ModelInfo(d.name, info.get("size", ""), info.get("note", "custom model"),
-                               tuple(info.get("languages", ())), info.get("source", "")))
+                               tuple(info.get("languages", ())), info.get("source", ""),
+                               info.get("label", "")))
     return found
 
 
@@ -95,9 +115,14 @@ def resolve_model(name: str) -> str:
 
 def models_for_language(language: str) -> list[ModelInfo]:
     custom = [m for m in installed_custom_models() if not m.languages or language in m.languages]
+    if language == "auto":
+        return [m for m in MODELS if not m.english_only] + custom
     if language == "en":
-        return list(MODELS) + custom
-    return [m for m in MODELS if not m.english_only] + custom
+        # English-only versions where they exist (they're more accurate), then the large ones.
+        return [m for m in MODELS if m.english_only or m.name.startswith("large")] + custom
+    # Fine-tunes for this language first: they're the reason to have installed them.
+    return [m for m in custom if language in m.languages] + \
+        [m for m in MODELS if not m.english_only] + [m for m in custom if not m.languages]
 
 
 def add_model(source: str, name: str | None = None, languages: tuple = (), note: str = "",
@@ -107,8 +132,10 @@ def add_model(source: str, name: str | None = None, languages: tuple = (), note:
     Needs `transformers` and `torch` next to ctranslate2 (only for converting).
     """
     known = {m.name: m for m in FINE_TUNED}
+    title = ""
     if source in known:
         m = known[source]
+        title = m.label
         name, source = name or m.name, m.source
         languages, note = languages or m.languages, note or m.note
     name = name or source.rstrip("/").split("/")[-1]
@@ -131,7 +158,7 @@ def add_model(source: str, name: str | None = None, languages: tuple = (), note:
         shutil.copy(hf_hub_download("openai/whisper-large-v3-turbo", "tokenizer.json"), tmp / "tokenizer.json")
     size = sum(f.stat().st_size for f in tmp.rglob("*") if f.is_file())
     (tmp / "whisper-dictate.json").write_text(json.dumps({
-        "source": source, "languages": list(languages), "note": note or f"fine-tune from {source}",
+        "source": source, "languages": list(languages), "label": title, "note": note or f"fine-tune from {source}",
         "size": f"{size / 1e9:.1f} GB" if size > 1e9 else f"{size // 1_000_000} MB",
     }, indent=2))
     if dest.exists():

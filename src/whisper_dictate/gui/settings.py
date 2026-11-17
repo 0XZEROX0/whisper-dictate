@@ -277,8 +277,8 @@ class LanguageProfiles(QWidget):
         name.setMinimumWidth(110)
         combo = combo_box([])
         for m in models_for_language(lang):
-            combo.addItem(f"{m.name}  ·  {m.size}" if m.size else m.name, m.name)
-            combo.setItemData(combo.count() - 1, m.note, Qt.ToolTipRole)
+            combo.addItem(m.display, m.name)
+            combo.setItemData(combo.count() - 1, f"{m.name}: {m.note}", Qt.ToolTipRole)
         model = model or self._default_model(lang)
         if lang != "en":
             model = model.removesuffix(".en")
@@ -704,7 +704,7 @@ class SettingsWindow(QWidget):
         self.model.blockSignals(True)
         self.model.clear()
         for m in models_for_language(lang):
-            self.model.addItem(f"{m.name}  ·  {m.size}" if m.size else m.name, m.name)
+            self.model.addItem(m.display, m.name)
             tip = m.note + (" (English only)" if m.english_only else "")
             self.model.setItemData(self.model.count() - 1, tip, Qt.ToolTipRole)
         set_combo(self.model, current, keep_unknown=True)

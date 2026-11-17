@@ -68,3 +68,15 @@ def test_custom_models_are_listed_and_resolved(tmp_path, monkeypatch):
     assert "egyptian-turbo" not in en and "faster-whisper-other" in en
     assert models.resolve_model("egyptian-turbo") == str(egy)
     assert models.resolve_model("small") == "small"
+
+
+def test_model_lists_are_short_and_readable(tmp_path, monkeypatch):
+    from whisper_dictate import models
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    en = [m.name for m in models.models_for_language("en")]
+    assert en == ["tiny.en", "base.en", "small.en", "medium.en", "large-v3-turbo", "large-v3"]
+    ar = [m.name for m in models.models_for_language("ar")]
+    assert ar == ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+    assert models.MODELS[2].display == "Small  ·  460 MB"
+    assert models.ModelInfo("faster-whisper-egyptian-turbo", "", "").label == "Egyptian Turbo"
