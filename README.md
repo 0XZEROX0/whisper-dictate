@@ -1,4 +1,17 @@
-# whisper-dictate
+<p align="center">
+  <img src="docs/icon.png" width="112" alt="whisper-dictate icon">
+</p>
+
+<h1 align="center">whisper-dictate</h1>
+
+<p align="center">
+  <b>Press a key, speak, and your words appear wherever you're typing.</b><br>
+  Local, private voice typing for Linux, powered by Whisper.
+</p>
+
+<p align="center">
+  <img src="docs/listening.gif" alt="The listening pill reacting to a voice, then transcribing, then typed">
+</p>
 
 System-wide voice typing for Linux. Press a shortcut in any app, speak, and
 your words are typed into whatever window has focus. Speech recognition runs
@@ -13,6 +26,24 @@ your words are typed into whatever window has focus. Speech recognition runs
 - A **Settings** window ("Voice Dictation" in your app menu): record a new
   shortcut, pick the language and model, switch hold/toggle, and update the app.
 - English by default; switch language in Settings (needs a multilingual model).
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/settings.png" width="520" alt="Settings window in dark mode">
+</p>
+
+The **Settings** window: record any shortcut by pressing it (the Copilot key
+works), switch between toggle and hold-to-talk, pick the language and model,
+and update the app.
+
+<p align="center">
+  <img src="docs/overlay-states.png" alt="Listening, transcribing and typed states of the on-screen pill">
+</p>
+
+The on-screen pill: bars that move with your voice while it listens, then a
+"Transcribing" spinner, then a check mark once the text is typed. It never
+takes focus, so the text lands where your cursor is.
 
 ## Install (CachyOS / Arch)
 

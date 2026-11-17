@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b6cff"/>
+      <stop offset="0.55" stop-color="#6a4cf5"/>
+      <stop offset="1" stop-color="#ff5c8a"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="0.3" cy="0.15" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mic" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#efe9ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="58" fill="url(#bg)"/>
+  <rect x="12" y="12" width="232" height="232" rx="58" fill="url(#shine)"/>
+  <!-- sound waves -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-opacity="0.55" stroke-width="9">
+    <path d="M62 98 Q50 124 62 150"/>
+    <path d="M194 98 Q206 124 194 150"/>
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-opacity="0.3" stroke-width="9">
+    <path d="M40 84 Q22 124 40 164"/>
+    <path d="M216 84 Q234 124 216 164"/>
+  </g>
+  <!-- microphone -->
+  <rect x="100" y="52" width="56" height="104" rx="28" fill="url(#mic)"/>
+  <g fill="#6a4cf5" opacity="0.35">
+    <rect x="114" y="78" width="28" height="6" rx="3"/>
+    <rect x="114" y="94" width="28" height="6" rx="3"/>
+    <rect x="114" y="110" width="28" height="6" rx="3"/>
+  </g>
+  <path d="M82 126 Q82 178 128 178 Q174 178 174 126" fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round"/>
+  <rect x="122" y="178" width="12" height="22" fill="#ffffff"/>
+  <rect x="98" y="196" width="60" height="12" rx="6" fill="#ffffff"/>
+</svg>

@@ -12,11 +12,12 @@ import sys
 import time
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from ..config import load_config
 from ..ipc import send_command
+from . import theme
 from .client import StateClient
 
 LABELS = {
@@ -27,11 +28,11 @@ LABELS = {
     "error": "Something went wrong",
 }
 COLORS = {
-    "recording": QColor("#ff4d5e"),
-    "transcribing": QColor("#ffb020"),
-    "done": QColor("#34c759"),
-    "empty": QColor("#9a9aa5"),
-    "error": QColor("#ff4d5e"),
+    "recording": QColor(theme.RED),
+    "transcribing": QColor(theme.ACCENT),
+    "done": QColor(theme.GREEN),
+    "empty": QColor(theme.MUTED),
+    "error": QColor(theme.RED),
 }
 WIDTH, HEIGHT, MARGIN = 236, 52, 56
 BARS = 9
@@ -116,8 +117,12 @@ class Overlay(QWidget):
         rect = QRectF(1, 1, WIDTH - 2, HEIGHT - 2)
         path = QPainterPath()
         path.addRoundedRect(rect, HEIGHT / 2 - 1, HEIGHT / 2 - 1)
-        p.fillPath(path, QColor(22, 22, 28, 235))
-        p.setPen(QPen(QColor(255, 255, 255, 28), 1))
+        p.fillPath(path, QColor(16, 18, 26, 240))
+        # Thin gradient rim in the app's colors.
+        rim = QLinearGradient(0, 0, WIDTH, 0)
+        rim.setColorAt(0, QColor(124, 92, 255, 150))
+        rim.setColorAt(1, QColor(255, 92, 138, 150))
+        p.setPen(QPen(rim, 1.2))
         p.drawPath(path)
 
         color = COLORS.get(self.state, QColor("#ffffff"))
@@ -186,7 +191,7 @@ def _tray(app: QApplication) -> QSystemTrayIcon | None:
     """Tray icon with a small menu, where the desktop has a tray."""
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return None
-    tray = QSystemTrayIcon(QIcon.fromTheme("audio-input-microphone"), app)
+    tray = QSystemTrayIcon(theme.app_icon(), app)
     tray.setToolTip("whisper-dictate")
     menu = QMenu()
     toggle = QAction("Start / stop dictation", menu)
@@ -214,6 +219,7 @@ def run_overlay() -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("whisper-dictate")
     app.setDesktopFileName("whisper-dictate")
+    app.setWindowIcon(theme.app_icon())
     app.setQuitOnLastWindowClosed(False)
 
     overlay = Overlay(cfg.overlay_position)
@@ -223,8 +229,7 @@ def run_overlay() -> int:
     def on_state(state: str, level: float) -> None:
         overlay.set_state(state, level)
         if tray is not None:
-            icon = "media-record" if state == "recording" else "audio-input-microphone"
-            tray.setIcon(QIcon.fromTheme(icon, QIcon.fromTheme("audio-input-microphone")))
+            tray.setToolTip("whisper-dictate: " + LABELS.get(state, "ready").lower())
 
     client.state.connect(on_state)
     client.start()

@@ -69,9 +69,12 @@ exec "$VENV/bin/whisper-dictate" "\$@"
 LAUNCHER
 chmod +x "$BIN_DIR/whisper-dictate"
 
-# 5. App menu entry -----------------------------------------------------------
+# 5. App menu entry and icon ---------------------------------------------------
 APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-mkdir -p "$APP_DIR"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+mkdir -p "$APP_DIR" "$ICON_DIR"
+install -m 644 "$REPO_DIR/src/whisper_dictate/assets/whisper-dictate.svg" "$ICON_DIR/whisper-dictate.svg"
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" 2>/dev/null || true
 sed "s|@BIN@|$BIN_DIR/whisper-dictate|g" "$REPO_DIR/packaging/whisper-dictate-settings.desktop" \
   > "$APP_DIR/whisper-dictate-settings.desktop"
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true

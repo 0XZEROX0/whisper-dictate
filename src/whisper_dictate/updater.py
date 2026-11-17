@@ -83,7 +83,25 @@ def apply(log=print) -> None:
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip()[-800:] or "pip install failed")
+    _refresh_desktop_files(repo)
     log("Restarting the background service…")
     subprocess.run(["systemctl", "--user", "restart", "whisper-dictate.service"],
                    capture_output=True, timeout=30)
     log("Updated.")
+
+
+def _refresh_desktop_files(repo: Path) -> None:
+    """Keep the app-menu entry and icon in sync with the new version."""
+    share = Path.home() / ".local" / "share"
+    try:
+        icon_dir = share / "icons" / "hicolor" / "scalable" / "apps"
+        icon_dir.mkdir(parents=True, exist_ok=True)
+        (icon_dir / "whisper-dictate.svg").write_bytes(
+            (repo / "src" / "whisper_dictate" / "assets" / "whisper-dictate.svg").read_bytes())
+        template = (repo / "packaging" / "whisper-dictate-settings.desktop").read_text()
+        launcher = Path.home() / ".local" / "bin" / "whisper-dictate"
+        apps = share / "applications"
+        apps.mkdir(parents=True, exist_ok=True)
+        (apps / "whisper-dictate-settings.desktop").write_text(template.replace("@BIN@", str(launcher)))
+    except OSError:
+        pass

@@ -7,20 +7,35 @@ import subprocess
 import sys
 from dataclasses import replace
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QMessageBox, QProgressDialog, QPushButton, QRadioButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMessageBox,
+    QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from .. import __version__, updater
-from ..config import Config, load_config, save_config
+from ..config import config_path, load_config, save_config
 from ..engines import choose_engine_name, cuda_available
 from ..ipc import send_command
 from ..keymap import combo_from_keys, pretty_combo
 from ..models import LANGUAGES, download_whisper_cpp_model, models_for_language, whisper_cpp_model_path
+from . import theme
+from .client import StateClient
+
+# Fields the window edits. Saving only writes the ones you changed, on top of
+# whatever is on disk, so edits made elsewhere meanwhile aren't overwritten.
+FIELDS = ("hotkey", "mode", "language", "model", "engine", "device", "typer", "trailing_space",
+          "overlay", "overlay_position", "notifications", "check_updates")
+
+STATUS = {
+    "idle": ("Ready", theme.GREEN),
+    "recording": ("Listening", theme.RED),
+    "transcribing": ("Transcribing", theme.AMBER),
+    "done": ("Typed", theme.GREEN),
+    "empty": ("Ready", theme.GREEN),
+    "error": ("Error", theme.RED),
+    "offline": ("Not running", theme.MUTED),
+}
 
 
 def evdev_name(scan_code: int) -> str | None:
@@ -35,41 +50,45 @@ def evdev_name(scan_code: int) -> str | None:
     return name
 
 
+# -- small building blocks ------------------------------------------------------
 class ShortcutButton(QPushButton):
-    """Click, then press the keys you want. Works with single keys like Right Ctrl."""
+    """Click, then press the keys you want. Single keys like Right Ctrl work too."""
 
     changed = Signal(str)
+    preview = Signal(str)
 
     def __init__(self, combo: str):
-        super().__init__()
+        super().__init__("Change shortcut")
+        self.setObjectName("capture")
+        self.setCursor(Qt.PointingHandCursor)
         self.combo = combo
         self.capturing = False
         self.pressed_keys: list[str] = []
         self.held: set[str] = set()
         self.setCheckable(True)
-        self.setMinimumWidth(220)
         self.clicked.connect(self._start)
-        self._refresh()
 
-    def _refresh(self) -> None:
-        self.setText("Press your shortcut…" if self.capturing else pretty_combo(self.combo))
+    def set_combo(self, combo: str) -> None:
+        self.combo = combo
+        self.preview.emit(combo)
 
     def _start(self) -> None:
         self.capturing = True
         self.pressed_keys, self.held = [], set()
         self.setChecked(True)
+        self.setText("Press your keys…  (Esc cancels)")
         self.grabKeyboard()
-        self._refresh()
 
-    def _finish(self) -> None:
+    def _finish(self, keep: bool) -> None:
         self.capturing = False
         self.releaseKeyboard()
         self.setChecked(False)
-        combo = combo_from_keys(self.pressed_keys)
+        self.setText("Change shortcut")
+        combo = combo_from_keys(self.pressed_keys) if keep else ""
         if combo:
             self.combo = combo
             self.changed.emit(combo)
-        self._refresh()
+        self.preview.emit(self.combo)
 
     def keyPressEvent(self, event) -> None:
         if not self.capturing:
@@ -77,35 +96,153 @@ class ShortcutButton(QPushButton):
         if event.isAutoRepeat():
             return
         if event.key() == Qt.Key_Escape and not self.pressed_keys:
-            self.pressed_keys = []
-            return self._finish()
+            return self._finish(keep=False)
         name = evdev_name(event.nativeScanCode())
         if name:
             self.held.add(name)
             if name not in self.pressed_keys:
                 self.pressed_keys.append(name)
-            self.setText(pretty_combo(combo_from_keys(self.pressed_keys)) + " …")
+            self.preview.emit(combo_from_keys(self.pressed_keys))
 
     def keyReleaseEvent(self, event) -> None:
         if not self.capturing:
             return super().keyReleaseEvent(event)
         if event.isAutoRepeat():
             return
-        name = evdev_name(event.nativeScanCode())
-        self.held.discard(name)
+        self.held.discard(evdev_name(event.nativeScanCode()))
         if not self.held and self.pressed_keys:
-            self._finish()
+            self._finish(keep=True)
 
     def focusOutEvent(self, event) -> None:
         if self.capturing:
-            self.pressed_keys = []
-            self._finish()
+            self._finish(keep=False)
         super().focusOutEvent(event)
 
 
-class Worker(QObject):
-    """Runs a function on a thread and reports back."""
+class Keycaps(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(0, 0, 0, 0)
+        self.row.setSpacing(8)
 
+    def set_combo(self, combo: str) -> None:
+        while self.row.count():
+            item = self.row.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        parts = pretty_combo(combo).split(" + ") if combo else ["None"]
+        for i, part in enumerate(parts):
+            if i:
+                plus = QLabel("+")
+                plus.setObjectName("plus")
+                self.row.addWidget(plus)
+            cap = QLabel(part)
+            cap.setObjectName("keycap")
+            self.row.addWidget(cap)
+        self.row.addStretch(1)
+
+
+class Segmented(QFrame):
+    changed = Signal(str)
+
+    def __init__(self, options: list[tuple[str, str]]):
+        super().__init__()
+        self.setObjectName("segmentBar")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(2)
+        self.group = QButtonGroup(self)
+        self.buttons: dict[str, QPushButton] = {}
+        for value, label in options:
+            b = QPushButton(label)
+            b.setObjectName("segment")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, v=value: self.changed.emit(v))
+            self.group.addButton(b)
+            self.buttons[value] = b
+            row.addWidget(b)
+
+    def value(self) -> str:
+        for value, b in self.buttons.items():
+            if b.isChecked():
+                return value
+        return next(iter(self.buttons))
+
+    def set_value(self, value: str) -> None:
+        if value in self.buttons:
+            self.buttons[value].setChecked(True)
+
+
+class Card(QFrame):
+    """A rounded section with rows of "label / description ... control"."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(18, 8, 18, 8)
+        self.box.setSpacing(0)
+        self._rows = 0
+
+    def add_row(self, title: str, desc: str, control: QWidget, wide: bool = False) -> QWidget:
+        line = None
+        if self._rows:
+            line = QFrame()
+            line.setObjectName("divider")
+            self.box.addWidget(line)
+        self._rows += 1
+        row = QWidget()
+        row.divider = line
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 12, 0, 12)
+        lay.setSpacing(16)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        t = QLabel(title)
+        t.setStyleSheet("font-weight: 600;")
+        text.addWidget(t)
+        if desc:
+            d = QLabel(desc)
+            d.setObjectName("hint")
+            d.setWordWrap(True)
+            text.addWidget(d)
+            row.desc = d
+        lay.addLayout(text, 1)
+        if wide:
+            control.setMinimumWidth(260)
+            control.setMaximumWidth(320)
+            control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lay.addWidget(control, 0, Qt.AlignVCenter)
+        self.box.addWidget(row)
+        return row
+
+
+def section(title: str) -> QLabel:
+    label = QLabel(title.upper())
+    label.setObjectName("sectionTitle")
+    label.setContentsMargins(6, 10, 0, 0)
+    return label
+
+
+def combo_box(items: list[tuple[str, str]]) -> QComboBox:
+    box = QComboBox()
+    box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    box.setMinimumContentsLength(14)
+    box.setCursor(Qt.PointingHandCursor)
+    for value, label in items:
+        box.addItem(label, value)
+    return box
+
+
+def set_combo(box: QComboBox, value) -> None:
+    idx = box.findData(value)
+    box.setCurrentIndex(idx if idx >= 0 else 0)
+
+
+# -- background work --------------------------------------------------------------
+class Worker(QObject):
     done = Signal(object)
     failed = Signal(str)
     progress = Signal(object)
@@ -127,281 +264,375 @@ def run_in_thread(parent, fn, *args, on_done=None, on_failed=None, on_progress=N
     worker = Worker(fn, *args)
     if on_progress:
         worker.args = (*args, worker.progress.emit)
+        worker.progress.connect(on_progress)
     worker.moveToThread(thread)
     if on_done:
         worker.done.connect(on_done)
     if on_failed:
         worker.failed.connect(on_failed)
-    if on_progress:
-        worker.progress.connect(on_progress)
     worker.done.connect(thread.quit)
     worker.failed.connect(thread.quit)
     thread.started.connect(worker.run)
     thread.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
-    thread._worker = worker  # keep alive
+    thread._worker = worker
     thread.start()
     return worker
 
 
-def _shrinkable(box: QComboBox) -> None:
-    box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-    box.setMinimumContentsLength(18)
-
-
-def _combo(items: list[tuple[str, str]], current: str) -> QComboBox:
-    box = QComboBox()
-    _shrinkable(box)
-    for value, label in items:
-        box.addItem(label, value)
-    idx = box.findData(current)
-    box.setCurrentIndex(idx if idx >= 0 else 0)
-    return box
-
-
+# -- the window -----------------------------------------------------------------------
 class SettingsWindow(QWidget):
-    def __init__(self):
+    def __init__(self, live: bool = True):
         super().__init__()
-        self.setWindowTitle("whisper-dictate settings")
-        self.setWindowIcon(QIcon.fromTheme("audio-input-microphone"))
-        self.resize(560, 720)
+        self.setObjectName("root")
+        self.setWindowTitle("Voice Dictation")
+        self.setWindowIcon(theme.app_icon())
+        self.resize(640, 820)
         self.cfg = load_config()
         self.has_cpp = shutil.which(self.cfg.whisper_cpp_binary) is not None or \
             shutil.which("whisper-cli") is not None
+        self.has_cuda = cuda_available()
         self._build()
-        self._poll_status()
-        self.status_timer = QTimer(self)
-        self.status_timer.timeout.connect(self._poll_status)
-        self.status_timer.start(1500)
-        if self.cfg.check_updates:
-            QTimer.singleShot(400, lambda: self._check_updates(quiet=True))
+        self._load(self.cfg)
 
-    # -- layout -----------------------------------------------------------
+        self.watcher = QFileSystemWatcher(self)
+        self._watch()
+        self.watcher.fileChanged.connect(self._config_changed_on_disk)
+        self.watcher.directoryChanged.connect(self._config_changed_on_disk)
+
+        if live:
+            self.client = StateClient(self)
+            self.client.state.connect(lambda s, _lvl: self._show_status(s))
+            self.client.start()
+            if self.cfg.check_updates:
+                QTimer.singleShot(500, lambda: self._check_updates(quiet=True))
+
+    # -- layout -----------------------------------------------------------------
     def _build(self) -> None:
-        cfg = self.cfg
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
         col = QVBoxLayout(body)
-        col.setSpacing(14)
+        col.setContentsMargins(28, 24, 28, 24)
+        col.setSpacing(12)
         scroll.setWidget(body)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, 1)
 
-        # Status
-        status_row = QHBoxLayout()
-        self.status_dot = QLabel("●")
-        self.status_label = QLabel("Checking…")
-        self.start_btn = QPushButton("Start")
-        self.start_btn.clicked.connect(lambda: self._systemctl("start"))
-        self.test_btn = QPushButton("Test dictation")
+        # Header
+        header = QHBoxLayout()
+        header.setSpacing(14)
+        logo = QLabel()
+        logo.setPixmap(theme.icon_pixmap(56))
+        header.addWidget(logo)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        title = QLabel("Voice Dictation")
+        title.setObjectName("title")
+        sub = QLabel("Speak anywhere. Your words appear where the cursor is.")
+        sub.setObjectName("subtitle")
+        titles.addWidget(title)
+        titles.addWidget(sub)
+        header.addLayout(titles, 1)
+        self.status_pill = QLabel()
+        self.status_pill.setObjectName("statusPill")
+        header.addWidget(self.status_pill, 0, Qt.AlignTop)
+        col.addLayout(header)
+        col.addSpacing(8)
+
+        # Hero: shortcut
+        hero = QFrame()
+        hero.setObjectName("hero")
+        h = QVBoxLayout(hero)
+        h.setContentsMargins(22, 20, 22, 20)
+        h.setSpacing(12)
+        lab = QLabel("PRESS TO DICTATE")
+        lab.setObjectName("sectionTitle")
+        h.addWidget(lab)
+        self.keycaps = Keycaps()
+        h.addWidget(self.keycaps)
+        self.shortcut = ShortcutButton(self.cfg.hotkey)
+        self.shortcut.preview.connect(self.keycaps.set_combo)
+        self.shortcut.changed.connect(lambda _c: self._mark())
+        self.mode = Segmented([("toggle", "Press to start / stop"), ("hold", "Hold to talk")])
+        self.mode.changed.connect(lambda _v: self._mode_changed())
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(self.mode)
+        row.addStretch(1)
+        row.addWidget(self.shortcut)
+        h.addLayout(row)
+        self.mode_hint = QLabel()
+        self.mode_hint.setObjectName("hint")
+        self.mode_hint.setWordWrap(True)
+        h.addWidget(self.mode_hint)
+        row = QHBoxLayout()
+        self.test_btn = QPushButton("Try it now")
+        self.test_btn.setObjectName("ghost")
+        self.test_btn.setCursor(Qt.PointingHandCursor)
         self.test_btn.setToolTip("Starts or stops a dictation, same as the shortcut")
         self.test_btn.clicked.connect(lambda: self._send("toggle"))
-        status_row.addWidget(self.status_dot)
-        status_row.addWidget(self.status_label, 1)
-        status_row.addWidget(self.test_btn)
-        status_row.addWidget(self.start_btn)
-        col.addLayout(status_row)
-
-        # Shortcut
-        box = QGroupBox("Shortcut")
-        form = QFormLayout(box)
-        self.shortcut = ShortcutButton(cfg.hotkey)
-        self.shortcut.setMinimumWidth(0)
-        form.addRow("Key combo", self.shortcut)
-        hint = QLabel("Click, then press the keys. A single key works too, like Right Ctrl, "
-                      "F9 or the Copilot key.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(placeholder-text);")
-        form.addRow("", hint)
-        mode_row = QHBoxLayout()
-        self.mode_group = QButtonGroup(self)
-        self.mode_toggle = QRadioButton("Toggle: press to start, press to stop")
-        self.mode_hold = QRadioButton("Hold to talk")
-        self.mode_group.addButton(self.mode_toggle)
-        self.mode_group.addButton(self.mode_hold)
-        (self.mode_hold if cfg.mode == "hold" else self.mode_toggle).setChecked(True)
-        mode_box = QVBoxLayout()
-        mode_box.addWidget(self.mode_toggle)
-        mode_box.addWidget(self.mode_hold)
-        mode_row.addLayout(mode_box)
-        form.addRow("Mode", mode_row)
-        col.addWidget(box)
+        self.start_btn = QPushButton("Start background service")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.clicked.connect(lambda: self._systemctl("start"))
+        row.addWidget(self.test_btn)
+        row.addWidget(self.start_btn)
+        row.addStretch(1)
+        h.addLayout(row)
+        col.addWidget(hero)
 
         # Speech
-        box = QGroupBox("Speech recognition")
-        form = QFormLayout(box)
-        self.language = _combo([(c, n) for c, n in LANGUAGES], cfg.language)
-        self.language.currentIndexChanged.connect(self._refill_models)
-        form.addRow("Language", self.language)
-        self.model = QComboBox()
-        _shrinkable(self.model)
-        form.addRow("Model", self.model)
-        self._refill_models()
-        engines = [("auto", "Automatic (best available)"),
-                   ("faster-whisper", "faster-whisper (CPU, or NVIDIA GPU)"),
-                   ("whisper-cpp", "whisper.cpp (GPU via Vulkan: Intel, AMD, NVIDIA)"
-                    + ("" if self.has_cpp else " — not installed"))]
-        self.engine = _combo(engines, cfg.engine)
-        self.engine.currentIndexChanged.connect(self._update_engine_note)
-        form.addRow("Engine", self.engine)
-        self.device = _combo([("auto", "Automatic"), ("cpu", "CPU"), ("cuda", "NVIDIA GPU (CUDA)")], cfg.device)
-        form.addRow("faster-whisper device", self.device)
-        self.engine_note = QLabel()
-        self.engine_note.setWordWrap(True)
-        self.engine_note.setStyleSheet("color: palette(placeholder-text);")
-        form.addRow("", self.engine_note)
-        self._update_engine_note()
-        col.addWidget(box)
+        col.addWidget(section("Speech recognition"))
+        card = Card()
+        self.language = combo_box([(c, n) for c, n in LANGUAGES])
+        self.language.currentIndexChanged.connect(self._language_changed)
+        card.add_row("Language", "The language you speak.", self.language, wide=True)
+        self.model = combo_box([])
+        self.model.currentIndexChanged.connect(self._model_changed)
+        self.model_row = card.add_row("Model", " ", self.model, wide=True)
+        self.engine = combo_box([
+            ("auto", "Automatic"),
+            ("faster-whisper", "faster-whisper (CPU / NVIDIA)"),
+            ("whisper-cpp", "whisper.cpp (GPU)"),
+        ])
+        self.engine.currentIndexChanged.connect(self._engine_changed)
+        self.engine_row = card.add_row("Engine", " ", self.engine, wide=True)
+        self.device = combo_box([("auto", "Automatic"), ("cpu", "CPU"), ("cuda", "NVIDIA GPU (CUDA)")])
+        self.device.currentIndexChanged.connect(self._mark)
+        self.device_row = card.add_row("Processor", "Where faster-whisper runs.", self.device, wide=True)
+        col.addWidget(card)
 
-        # Output
-        box = QGroupBox("Typing")
-        form = QFormLayout(box)
-        self.typer = _combo([("auto", "Automatic"), ("ydotool", "ydotool (works everywhere)"),
-                             ("wtype", "wtype (Hyprland, Sway)"), ("xdotool", "xdotool (X11)"),
-                             ("clipboard", "Paste from clipboard")], cfg.typer)
-        form.addRow("Method", self.typer)
-        self.trailing = QCheckBox("Add a space after each dictation")
-        self.trailing.setChecked(cfg.trailing_space)
-        form.addRow("", self.trailing)
-        col.addWidget(box)
+        # Typing
+        col.addWidget(section("Typing"))
+        card = Card()
+        self.typer = combo_box([("auto", "Automatic"), ("ydotool", "ydotool (any desktop)"),
+                                ("wtype", "wtype (Hyprland, Sway)"), ("xdotool", "xdotool (X11)"),
+                                ("clipboard", "Paste from clipboard")])
+        self.typer.currentIndexChanged.connect(self._mark)
+        card.add_row("Typing method", "How the text reaches the focused window.", self.typer, wide=True)
+        self.trailing = theme.ToggleSwitch()
+        self.trailing.toggled.connect(self._mark)
+        card.add_row("Space after each dictation", "So the next one doesn't run into it.", self.trailing)
+        col.addWidget(card)
 
         # Feedback
-        box = QGroupBox("Feedback")
-        form = QFormLayout(box)
-        self.overlay = QCheckBox("Show an animation while listening and transcribing")
-        self.overlay.setChecked(cfg.overlay)
-        form.addRow("", self.overlay)
-        self.position = _combo([("bottom", "Bottom of the screen"), ("top", "Top of the screen")],
-                               cfg.overlay_position)
-        form.addRow("Position", self.position)
-        self.notifications = _combo([("errors", "Only for errors"), ("all", "Every dictation"),
-                                     ("off", "Never")], cfg.notifications)
-        form.addRow("Notifications", self.notifications)
-        col.addWidget(box)
+        col.addWidget(section("Feedback"))
+        card = Card()
+        self.overlay = theme.ToggleSwitch()
+        self.overlay.toggled.connect(self._mark)
+        card.add_row("Listening animation", "A small pill that reacts to your voice.", self.overlay)
+        self.position = combo_box([("bottom", "Bottom of screen"), ("top", "Top of screen")])
+        self.position.currentIndexChanged.connect(self._mark)
+        card.add_row("Position", "", self.position, wide=True)
+        self.notifications = combo_box([("errors", "Only errors"), ("all", "Every dictation"),
+                                        ("off", "Never")])
+        self.notifications.currentIndexChanged.connect(self._mark)
+        card.add_row("Notifications", "Desktop popups.", self.notifications, wide=True)
+        col.addWidget(card)
 
         # Updates
-        box = QGroupBox("Updates")
-        v = QVBoxLayout(box)
+        col.addWidget(section("Updates"))
+        card = Card()
         commit = updater.current_commit()
-        self.version_label = QLabel(f"Version {__version__}" + (f" ({commit})" if commit else ""))
-        v.addWidget(self.version_label)
-        self.update_label = QLabel("")
-        self.update_label.setWordWrap(True)
-        v.addWidget(self.update_label)
-        row = QHBoxLayout()
-        self.check_btn = QPushButton("Check for updates")
+        buttons = QWidget()
+        b = QHBoxLayout(buttons)
+        b.setContentsMargins(0, 0, 0, 0)
+        b.setSpacing(8)
+        self.check_btn = QPushButton("Check now")
+        self.check_btn.setCursor(Qt.PointingHandCursor)
         self.check_btn.clicked.connect(lambda: self._check_updates(quiet=False))
-        self.update_btn = QPushButton("Update now")
+        self.update_btn = QPushButton("Update")
+        self.update_btn.setObjectName("primary")
+        self.update_btn.setCursor(Qt.PointingHandCursor)
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._apply_update)
-        row.addWidget(self.check_btn)
-        row.addWidget(self.update_btn)
-        row.addStretch(1)
-        v.addLayout(row)
-        self.auto_check = QCheckBox("Check for updates when this window opens")
-        self.auto_check.setChecked(cfg.check_updates)
-        v.addWidget(self.auto_check)
-        col.addWidget(box)
+        b.addWidget(self.check_btn)
+        b.addWidget(self.update_btn)
+        self.update_row = card.add_row(
+            f"Version {__version__}" + (f"  ·  {commit}" if commit else ""),
+            "Checks GitHub for a newer version.", buttons)
+        self.auto_check = theme.ToggleSwitch()
+        self.auto_check.toggled.connect(self._mark)
+        card.add_row("Check automatically", "Every time this window opens.", self.auto_check)
+        col.addWidget(card)
         col.addStretch(1)
 
-        # Buttons
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
+        # Footer
+        footer = QFrame()
+        footer.setStyleSheet(f"background: {theme.SURFACE}; border-top: 1px solid {theme.BORDER};")
+        f = QHBoxLayout(footer)
+        f.setContentsMargins(28, 14, 28, 14)
+        self.dirty_label = QLabel("")
+        self.dirty_label.setObjectName("hint")
+        self.dirty_label.setStyleSheet("border: none;")
+        f.addWidget(self.dirty_label, 1)
         close = QPushButton("Close")
+        close.setObjectName("ghost")
         close.clicked.connect(self.close)
-        save = QPushButton("Save and apply")
-        save.setDefault(True)
-        save.clicked.connect(self._save)
-        buttons.addWidget(close)
-        buttons.addWidget(save)
-        outer.addLayout(buttons)
+        self.save_btn = QPushButton("Save changes")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.setCursor(Qt.PointingHandCursor)
+        self.save_btn.clicked.connect(self._save)
+        f.addWidget(close)
+        f.addWidget(self.save_btn)
+        outer.addWidget(footer)
+        self._show_status("offline")
 
-    def _refill_models(self) -> None:
+    # -- values ---------------------------------------------------------------------
+    def _values(self) -> dict:
+        return {
+            "hotkey": self.shortcut.combo,
+            "mode": self.mode.value(),
+            "language": self.language.currentData(),
+            "model": self.model.currentData(),
+            "engine": self.engine.currentData(),
+            "device": self.device.currentData(),
+            "typer": self.typer.currentData(),
+            "trailing_space": self.trailing.isChecked(),
+            "overlay": self.overlay.isChecked(),
+            "overlay_position": self.position.currentData(),
+            "notifications": self.notifications.currentData(),
+            "check_updates": self.auto_check.isChecked(),
+        }
+
+    def _load(self, cfg) -> None:
+        self._loading = True
+        self.shortcut.set_combo(cfg.hotkey)
+        self.mode.set_value(cfg.mode)
+        set_combo(self.language, cfg.language)
+        self._fill_models(cfg.model)
+        set_combo(self.engine, cfg.engine)
+        set_combo(self.device, cfg.device)
+        set_combo(self.typer, cfg.typer)
+        self.trailing.setChecked(cfg.trailing_space)
+        self.overlay.setChecked(cfg.overlay)
+        set_combo(self.position, cfg.overlay_position)
+        set_combo(self.notifications, cfg.notifications)
+        self.auto_check.setChecked(cfg.check_updates)
+        self._loading = False
+        self.cfg = cfg
+        self.initial = self._values()
+        self._mode_changed(mark=False)
+        self._engine_changed(mark=False)
+        self._model_changed()
+        self._mark()
+
+    def _changed_fields(self) -> dict:
+        now = self._values()
+        return {k: v for k, v in now.items() if v != self.initial.get(k)}
+
+    def _mark(self, *_args) -> None:
+        if getattr(self, "_loading", False):
+            return
+        changed = self._changed_fields()
+        self.save_btn.setEnabled(bool(changed))
+        n = len(changed)
+        self.dirty_label.setText(f"{n} unsaved change{'s' if n != 1 else ''}" if n else "All changes saved")
+
+    # -- reactions ----------------------------------------------------------------------
+    def _fill_models(self, current: str) -> None:
         lang = self.language.currentData()
-        current = self.model.currentData() or self.cfg.model
         if lang != "en" and current.endswith(".en"):
             current = current.removesuffix(".en")
         self.model.blockSignals(True)
         self.model.clear()
         for m in models_for_language(lang):
-            suffix = "  (English only)" if m.english_only else ""
-            self.model.addItem(f"{m.name} — {m.size}, {m.note}{suffix}", m.name)
-        idx = self.model.findData(current)
-        self.model.setCurrentIndex(idx if idx >= 0 else 0)
+            self.model.addItem(f"{m.name}  ·  {m.size}", m.name)
+            tip = m.note + (" (English only)" if m.english_only else "")
+            self.model.setItemData(self.model.count() - 1, tip, Qt.ToolTipRole)
+        set_combo(self.model, current)
         self.model.blockSignals(False)
 
-    def _update_engine_note(self) -> None:
-        engine = self.engine.currentData()
-        resolved = choose_engine_name(replace(self.cfg, engine=engine), has_cuda=cuda_available(),
-                                      has_whisper_cpp=self.has_cpp)
-        if resolved == "whisper-cpp":
-            note = "Uses your GPU through whisper.cpp."
-            if not self.has_cpp:
-                note = ("whisper.cpp isn't installed. Install a Vulkan build "
-                        "(AUR: whisper.cpp-vulkan) to use an Intel or AMD GPU.")
-        else:
-            note = "Runs on the CPU" + (" or your NVIDIA GPU." if cuda_available() else ".")
-        self.engine_note.setText(note)
+    def _model_changed(self) -> None:
+        tip = self.model.currentData(Qt.ToolTipRole) or ""
+        self.model_row.desc.setText(tip[:1].upper() + tip[1:] if tip else "")
+        self._mark()
 
-    # -- status -----------------------------------------------------------
-    def _poll_status(self) -> None:
+    def _language_changed(self) -> None:
+        if getattr(self, "_loading", False):
+            return
+        self._fill_models(self.model.currentData() or self.cfg.model)
+        self._mark()
+
+    def _mode_changed(self, mark: bool = True) -> None:
+        self.mode_hint.setText(
+            "Hold the keys while you talk; the text is typed when you let go."
+            if self.mode.value() == "hold"
+            else "Press once to start listening, press again to type what you said.")
+        if mark:
+            self._mark()
+
+    def _engine_changed(self, *_args, mark: bool = True) -> None:
+        resolved = choose_engine_name(replace(self.cfg, engine=self.engine.currentData()),
+                                      has_cuda=self.has_cuda, has_whisper_cpp=self.has_cpp)
+        if resolved == "whisper-cpp":
+            note = "Uses your GPU through whisper.cpp." if self.has_cpp else \
+                "whisper.cpp isn't installed (needed for Intel / AMD GPUs)."
+        else:
+            note = "Runs on your " + ("NVIDIA GPU or CPU." if self.has_cuda else "CPU. Fastest on most laptops.")
+        self.engine_row.desc.setText(note)
+        show = resolved == "faster-whisper"
+        self.device_row.setVisible(show)
+        if self.device_row.divider is not None:
+            self.device_row.divider.setVisible(show)
+        if mark:
+            self._mark()
+
+    def _config_changed_on_disk(self, *_args) -> None:
+        self._watch()
+        if self._changed_fields():
+            return  # don't throw away what you're editing
         try:
-            state = send_command("status", timeout=1.0)
-            running = True
-        except OSError:
-            state, running = "not running", False
-        color = {"recording": "#ff4d5e", "transcribing": "#ffb020"}.get(state, "#34c759")
-        if not running:
-            color = "#9a9aa5"
-        self.status_dot.setStyleSheet(f"color: {color}; font-size: 18px;")
-        text = {"idle": "Running and ready", "recording": "Listening…",
-                "transcribing": "Transcribing…"}.get(state, state)
-        self.status_label.setText(f"<b>{text}</b>" if running else
-                                  "<b>Not running</b>: start it to use the shortcut")
+            self._load(load_config())
+        except (OSError, ValueError):
+            pass
+
+    def _watch(self) -> None:
+        path = config_path()
+        for p in (str(path), str(path.parent)):
+            if path.parent.exists() and p not in self.watcher.files() + self.watcher.directories():
+                if p == str(path) and not path.exists():
+                    continue
+                self.watcher.addPath(p)
+
+    # -- status -------------------------------------------------------------------------
+    def _show_status(self, state: str) -> None:
+        text, color = STATUS.get(state, (state, theme.MUTED))
+        self.status_pill.setText(f"●  {text}")
+        self.status_pill.setStyleSheet(
+            f"color: {color}; background: {color}22; border: 1px solid {color}55;")
+        running = state != "offline"
         self.start_btn.setVisible(not running)
-        self.test_btn.setEnabled(running)
+        self.test_btn.setVisible(running)
+        self.test_btn.setText("Stop and type" if state == "recording" else "Try it now")
 
     def _send(self, cmd: str) -> None:
         try:
             send_command(cmd)
         except OSError:
             pass
-        self._poll_status()
 
     def _systemctl(self, action: str) -> None:
         subprocess.run(["systemctl", "--user", action, "whisper-dictate.service"], capture_output=True)
-        QTimer.singleShot(800, self._poll_status)
 
-    # -- save -------------------------------------------------------------
-    def _collect(self) -> Config:
-        return replace(
-            self.cfg,
-            hotkey=self.shortcut.combo,
-            mode="hold" if self.mode_hold.isChecked() else "toggle",
-            language=self.language.currentData(),
-            model=self.model.currentData(),
-            engine=self.engine.currentData(),
-            device=self.device.currentData(),
-            typer=self.typer.currentData(),
-            trailing_space=self.trailing.isChecked(),
-            overlay=self.overlay.isChecked(),
-            overlay_position=self.position.currentData(),
-            notifications=self.notifications.currentData(),
-            check_updates=self.auto_check.isChecked(),
-        )
-
+    # -- save -----------------------------------------------------------------------------
     def _save(self) -> None:
-        cfg = self._collect()
+        changed = self._changed_fields()
+        if not changed:
+            return
         try:
+            cfg = replace(load_config(), **changed)  # merge onto what's on disk now
             save_config(cfg)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Couldn't save", str(exc))
             return
-        self.cfg = cfg
-        resolved = choose_engine_name(cfg, has_cuda=cuda_available(), has_whisper_cpp=self.has_cpp)
+        self._load(cfg)
+        resolved = choose_engine_name(cfg, has_cuda=self.has_cuda, has_whisper_cpp=self.has_cpp)
         if resolved == "whisper-cpp" and not cfg.whisper_cpp_model_path \
                 and not whisper_cpp_model_path(cfg.model).exists():
             self._download_then_restart(cfg.model)
@@ -426,27 +657,29 @@ class SettingsWindow(QWidget):
                       on_done=finished, on_failed=failed, on_progress=dialog.setValue)
 
     def _restart(self) -> None:
-        self.status_label.setText("<b>Restarting…</b> (loading the model can take a few seconds)")
-        subprocess.run(["systemctl", "--user", "restart", "whisper-dictate.service"], capture_output=True)
-        QTimer.singleShot(1500, self._poll_status)
+        self.dirty_label.setText("Saved. Restarting dictation with the new settings…")
+        self._systemctl("restart")
+        QTimer.singleShot(2500, self._mark)
 
-    # -- updates ----------------------------------------------------------
+    # -- updates --------------------------------------------------------------------------
     def _check_updates(self, quiet: bool) -> None:
         self.check_btn.setEnabled(False)
-        self.update_label.setText("Checking for updates…")
+        self.update_row.desc.setText("Checking…")
 
         def done(info):
             self.check_btn.setEnabled(True)
             if info.error:
-                self.update_label.setText("" if quiet else f"Couldn't check: {info.error}")
+                self.update_row.desc.setText("Checks GitHub for a newer version." if quiet
+                                             else f"Couldn't check: {info.error}")
             elif info.available:
-                changes = "".join(f"<li>{c}</li>" for c in info.changes[:8])
-                self.update_label.setText(
-                    f"<b>An update is available</b> ({len(info.changes)} change"
-                    f"{'s' if len(info.changes) != 1 else ''}):<ul>{changes}</ul>")
+                n = len(info.changes)
+                latest = "; ".join(info.changes[:3]) + ("…" if n > 3 else "")
+                self.update_row.desc.setText(
+                    f"<span style='color:{theme.ACCENT_2}; font-weight:600'>Update available</span>"
+                    f" ({n} change{'s' if n != 1 else ''}): {latest}")
                 self.update_btn.setVisible(True)
             else:
-                self.update_label.setText("You're on the latest version.")
+                self.update_row.desc.setText("You're on the latest version.")
                 self.update_btn.setVisible(False)
 
         run_in_thread(self, updater.check, on_done=done,
@@ -455,27 +688,41 @@ class SettingsWindow(QWidget):
     def _apply_update(self) -> None:
         self.update_btn.setEnabled(False)
         self.check_btn.setEnabled(False)
-        self.update_label.setText("Updating… this can take a minute.")
+        self.update_row.desc.setText("Updating… this can take a minute.")
 
         def done(_):
-            self.update_label.setText("<b>Updated.</b> The background service restarted. "
-                                      "Close and reopen this window to see the new settings.")
+            self.update_row.desc.setText("Updated and restarted. Reopen this window to see what's new.")
             self.update_btn.setVisible(False)
             self.check_btn.setEnabled(True)
-            self.version_label.setText(f"Version {__version__} ({updater.current_commit()})")
 
         def failed(msg):
-            self.update_label.setText(f"Update failed: {msg}")
+            self.update_row.desc.setText(f"Update failed: {msg}")
             self.update_btn.setEnabled(True)
             self.check_btn.setEnabled(True)
 
         run_in_thread(self, updater.apply, lambda *_: None, on_done=done, on_failed=failed)
 
+    def closeEvent(self, event) -> None:
+        if self._changed_fields():
+            answer = QMessageBox.question(
+                self, "Unsaved changes", "Save your changes before closing?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+            if answer == QMessageBox.Cancel:
+                event.ignore()
+                return
+            if answer == QMessageBox.Save:
+                self._save()
+        if hasattr(self, "client"):
+            self.client.stop()
+        super().closeEvent(event)
+
 
 def run_settings() -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("whisper-dictate")
+    app.setApplicationDisplayName("Voice Dictation")
     app.setDesktopFileName("whisper-dictate-settings")
+    theme.apply(app)
     win = SettingsWindow()
     win.show()
     return app.exec()
