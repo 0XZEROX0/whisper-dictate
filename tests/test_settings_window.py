@@ -95,3 +95,35 @@ def test_update_available_message_does_not_crash(app, cfg_home, monkeypatch):
         time.sleep(0.01)
     assert win.update_btn.isVisibleTo(win)
     assert "Update available" in win.update_row.desc.text()
+
+
+def test_detect_languages_with_a_model_each(app, cfg_home, monkeypatch):
+    from whisper_dictate.gui import settings
+
+    monkeypatch.setattr(settings.SettingsWindow, "_restart", lambda self: None)
+    save_config(Config(language="ar", model="small"))
+    win = settings.SettingsWindow(live=False)
+    assert win.profiles.isHidden()
+
+    # Switching to auto-detect starts the list with the language in use.
+    settings.set_combo(win.language, "auto")
+    assert not win.profiles.isHidden()
+    assert win.profiles.languages() == ["ar"]
+    assert win.model_row.isHidden()
+
+    win.profiles.add("en")
+    settings.set_combo(win.profiles.rows["ar"], "large-v3-turbo")
+    assert win.profiles.models() == {"ar": "large-v3-turbo", "en": "small.en"}
+    assert "en" not in [win.profiles.adder.itemData(i) for i in range(win.profiles.adder.count())]
+    win._save()
+
+    saved = load_config()
+    assert saved.language == "auto"
+    assert saved.detect_languages == ["ar", "en"]
+    assert saved.language_models == {"ar": "large-v3-turbo", "en": "small.en"}
+
+    win2 = settings.SettingsWindow(live=False)
+    assert win2.profiles.models() == {"ar": "large-v3-turbo", "en": "small.en"}
+    win2.profiles.remove("ar")
+    assert win2.profiles.languages() == ["en"]
+    assert win2.save_btn.isEnabled()

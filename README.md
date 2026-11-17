@@ -141,6 +141,21 @@ Restart after editing: `systemctl --user restart whisper-dictate`.
 With a GPU, try `medium.en` or `large-v3-turbo` for better accuracy.
 On a slow laptop use `base.en`.
 
+**Several languages:** set Language to *Detect automatically* in Settings and
+add the languages you speak, each with its own model. The app then only
+chooses between those (far more reliable than open detection) and uses that
+language's model, so English can stay fast while a harder language like
+Arabic gets `large-v3-turbo`:
+
+```toml
+[engine]
+language = "auto"
+
+[languages]
+detect = ["en", "ar"]
+models = { "en" = "small.en", "ar" = "large-v3-turbo" }
+```
+
 ## Updates
 
 Settings checks for a new version each time it opens (you can turn that off),

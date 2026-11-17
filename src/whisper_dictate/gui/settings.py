@@ -25,7 +25,7 @@ from .client import StateClient
 
 # Fields the window edits. Saving only writes the ones you changed, on top of
 # whatever is on disk, so edits made elsewhere meanwhile aren't overwritten.
-FIELDS = ("hotkey", "mode", "language", "model", "engine", "device", "typer", "trailing_space", "press_enter",
+FIELDS = ("hotkey", "mode", "language", "model", "detect_languages", "language_models", "engine", "device", "typer", "trailing_space", "press_enter",
           "overlay", "overlay_position", "notifications", "check_updates")
 
 STATUS = {
@@ -221,6 +221,118 @@ class Card(QFrame):
         lay.addWidget(control, 0, Qt.AlignVCenter)
         self.box.addWidget(row)
         return row
+
+
+class LanguageProfiles(QWidget):
+    """With "Detect automatically": the languages to choose between, each with its model."""
+
+    changed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.names = dict(LANGUAGES)
+        self.rows: dict[str, QComboBox] = {}
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(0, 12, 0, 12)
+        self.box.setSpacing(8)
+        title = QLabel("Languages to detect")
+        title.setStyleSheet("font-weight: 600;")
+        self.box.addWidget(title)
+        hint = QLabel("The app only chooses between these, then uses each language's own model. "
+                      "Use a big model for hard languages and a fast one for the rest.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        self.box.addWidget(hint)
+        self.list = QVBoxLayout()
+        self.list.setSpacing(6)
+        self.box.addLayout(self.list)
+        self.empty = QLabel("No languages yet: every language is considered, using the model above.")
+        self.empty.setObjectName("hint")
+        self.empty.setWordWrap(True)
+        self.box.addWidget(self.empty)
+        add_row = QHBoxLayout()
+        self.adder = combo_box([])
+        self.adder.setMinimumWidth(200)
+        self.add_btn = QPushButton("Add language")
+        self.add_btn.setObjectName("ghost")
+        self.add_btn.setCursor(Qt.PointingHandCursor)
+        self.add_btn.clicked.connect(self._add_clicked)
+        add_row.addWidget(self.adder)
+        add_row.addWidget(self.add_btn)
+        add_row.addStretch(1)
+        self.box.addLayout(add_row)
+        self._refresh_adder()
+
+    def _default_model(self, lang: str) -> str:
+        return "small.en" if lang == "en" else "small"
+
+    def add(self, lang: str, model: str | None = None, emit: bool = True) -> None:
+        if lang in self.rows or lang == "auto":
+            return
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        name = QLabel(self.names.get(lang, lang))
+        name.setMinimumWidth(110)
+        combo = combo_box([])
+        for m in models_for_language(lang):
+            combo.addItem(f"{m.name}  ·  {m.size}", m.name)
+            combo.setItemData(combo.count() - 1, m.note, Qt.ToolTipRole)
+        model = model or self._default_model(lang)
+        if lang != "en":
+            model = model.removesuffix(".en")
+        set_combo(combo, model)
+        combo.setMinimumWidth(220)
+        combo.currentIndexChanged.connect(lambda *_: self.changed.emit())
+        remove = QPushButton("Remove")
+        remove.setObjectName("ghost")
+        remove.setCursor(Qt.PointingHandCursor)
+        remove.clicked.connect(lambda: self.remove(lang))
+        lay.addWidget(name)
+        lay.addWidget(combo, 1)
+        lay.addWidget(remove)
+        row.combo = combo
+        self.rows[lang] = combo
+        combo.row = row
+        self.list.addWidget(row)
+        self._refresh_adder()
+        if emit:
+            self.changed.emit()
+
+    def remove(self, lang: str, emit: bool = True) -> None:
+        combo = self.rows.pop(lang, None)
+        if combo is None:
+            return
+        combo.row.setParent(None)
+        combo.row.deleteLater()
+        self._refresh_adder()
+        if emit:
+            self.changed.emit()
+
+    def _add_clicked(self) -> None:
+        lang = self.adder.currentData()
+        if lang:
+            self.add(lang)
+
+    def _refresh_adder(self) -> None:
+        self.adder.clear()
+        for code, name in LANGUAGES:
+            if code != "auto" and code not in self.rows:
+                self.adder.addItem(name, code)
+        self.empty.setVisible(not self.rows)
+
+    def set_profiles(self, languages: list, models: dict) -> None:
+        for lang in list(self.rows):
+            self.remove(lang, emit=False)
+        for lang in languages:
+            self.add(lang, models.get(lang), emit=False)
+
+    def languages(self) -> list:
+        return list(self.rows)
+
+    def models(self) -> dict:
+        return {lang: combo.currentData() for lang, combo in self.rows.items()}
 
 
 def section(title: str) -> QLabel:
@@ -425,6 +537,13 @@ class SettingsWindow(QWidget):
         self.model = combo_box([])
         self.model.currentIndexChanged.connect(self._model_changed)
         self.model_row = card.add_row("Model", " ", self.model, wide=True)
+        self.profiles = LanguageProfiles()
+        self.profiles.changed.connect(self._mark)
+        self.profiles.changed.connect(lambda: self._show_profiles())
+        self.profiles_divider = QFrame()
+        self.profiles_divider.setObjectName("divider")
+        card.box.addWidget(self.profiles_divider)
+        card.box.addWidget(self.profiles)
         self.engine = combo_box([
             ("auto", "Automatic (fastest)"),
             ("faster-whisper", "faster-whisper (CPU / NVIDIA)"),
@@ -524,6 +643,8 @@ class SettingsWindow(QWidget):
             "mode": self.mode.value(),
             "language": self.language.currentData(),
             "model": self.model.currentData(),
+            "detect_languages": self.profiles.languages(),
+            "language_models": self.profiles.models(),
             "engine": self.engine.currentData(),
             "device": self.device.currentData(),
             "typer": self.typer.currentData(),
@@ -541,6 +662,7 @@ class SettingsWindow(QWidget):
         self.mode.set_value(cfg.mode)
         set_combo(self.language, cfg.language)
         self._fill_models(cfg.model)
+        self.profiles.set_profiles(cfg.detect_languages, cfg.language_models)
         set_combo(self.engine, cfg.engine)
         set_combo(self.device, cfg.device)
         set_combo(self.typer, cfg.typer)
@@ -556,6 +678,7 @@ class SettingsWindow(QWidget):
         self._mode_changed(mark=False)
         self._engine_changed(mark=False)
         self._model_changed()
+        self._show_profiles()
         self._mark()
 
     def _changed_fields(self) -> dict:
@@ -592,8 +715,29 @@ class SettingsWindow(QWidget):
     def _language_changed(self) -> None:
         if getattr(self, "_loading", False):
             return
+        previous = getattr(self, "_last_language", self.cfg.language)
         self._fill_models(self.model.currentData() or self.cfg.model)
+        # Switching to auto-detect: start the list with the language you used.
+        if self.language.currentData() == "auto" and not self.profiles.languages() \
+                and previous not in ("auto", "", None):
+            self.profiles.add(previous, self.model.currentData(), emit=False)
+        self._show_profiles()
         self._mark()
+
+    def _show_profiles(self) -> None:
+        self._last_language = self.language.currentData()
+        auto = self.language.currentData() == "auto"
+        self.profiles.setVisible(auto)
+        # Profiles are a faster-whisper feature; whisper.cpp just auto-detects.
+        self.profiles_divider.setVisible(auto)
+        if auto and self.profiles.languages():
+            self.model_row.setVisible(False)
+            if self.model_row.divider is not None:
+                self.model_row.divider.setVisible(False)
+        else:
+            self.model_row.setVisible(True)
+            if self.model_row.divider is not None:
+                self.model_row.divider.setVisible(True)
 
     def _mode_changed(self, mark: bool = True) -> None:
         self.mode_hint.setText(

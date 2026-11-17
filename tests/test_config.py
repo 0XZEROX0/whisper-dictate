@@ -48,3 +48,18 @@ def test_old_boolean_notifications_still_load():
 def test_save_rejects_invalid(tmp_path):
     with pytest.raises(ValueError):
         save_config(Config(mode="sometimes"), tmp_path / "c.toml")
+
+
+def test_language_profiles_roundtrip(tmp_path, monkeypatch):
+    from whisper_dictate.config import Config, load_config, save_config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfg = Config(language="auto", detect_languages=["en", "ar"],
+                 language_models={"en": "small.en", "ar": "large-v3-turbo"})
+    save_config(cfg)
+    loaded = load_config()
+    assert loaded.detect_languages == ["en", "ar"]
+    assert loaded.language_models == {"en": "small.en", "ar": "large-v3-turbo"}
+    assert loaded.model_for("ar") == "large-v3-turbo"
+    assert loaded.model_for("de") == "small"  # falls back to model, minus .en
+    assert Config(model="small.en").model_for("fr") == "small"

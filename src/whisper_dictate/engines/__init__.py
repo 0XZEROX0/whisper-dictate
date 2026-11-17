@@ -34,9 +34,17 @@ def choose_engine_name(cfg: Config, *, has_cuda=None, has_whisper_cpp=None) -> s
     return "faster-whisper"
 
 
+def uses_language_profiles(cfg: Config) -> bool:
+    return cfg.language == "auto" and bool(cfg.detect_languages)
+
+
 def create_engine(cfg: Config) -> Engine:
     name = choose_engine_name(cfg)
     log.info("using engine %s", name)
+    if name == "faster-whisper" and uses_language_profiles(cfg):
+        from .multi import MultiLanguageEngine
+
+        return MultiLanguageEngine(cfg)
     if name == "whisper-cpp":
         from .whisper_cpp import WhisperCppEngine
 
