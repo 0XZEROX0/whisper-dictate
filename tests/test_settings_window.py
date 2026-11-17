@@ -52,3 +52,46 @@ def test_unchanged_window_reloads_when_file_changes(app, cfg_home):
     save_config(Config(hotkey="shift+super+f23"))
     win._config_changed_on_disk()
     assert win.shortcut.combo == "shift+super+f23"
+
+
+def test_background_callbacks_run_on_gui_thread(app):
+    import time
+
+    from PySide6.QtCore import QObject, QThread
+
+    from whisper_dictate.gui.settings import run_in_thread
+
+    parent = QObject()
+    seen = {}
+
+    def work(progress):
+        progress(50)
+        return "result"
+
+    run_in_thread(parent, work,
+                  on_done=lambda v: seen.update(done=(v, QThread.currentThread() is app.thread())),
+                  on_progress=lambda v: seen.update(progress=(v, QThread.currentThread() is app.thread())))
+    deadline = time.time() + 5
+    while "done" not in seen and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert seen["done"] == ("result", True)
+    assert seen["progress"] == (50, True)
+
+
+def test_update_available_message_does_not_crash(app, cfg_home, monkeypatch):
+    import time
+
+    from whisper_dictate import updater
+    from whisper_dictate.gui import settings
+
+    monkeypatch.setattr(updater, "check", lambda: updater.UpdateInfo(
+        available=True, current="a", latest="b", changes=["New feature"]))
+    win = settings.SettingsWindow(live=False)
+    win._check_updates(quiet=True)
+    deadline = time.time() + 5
+    while not win.update_btn.isVisibleTo(win) and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert win.update_btn.isVisibleTo(win)
+    assert "Update available" in win.update_row.desc.text()

@@ -96,12 +96,13 @@ def _refresh_desktop_files(repo: Path) -> None:
     try:
         icon_dir = share / "icons" / "hicolor" / "scalable" / "apps"
         icon_dir.mkdir(parents=True, exist_ok=True)
-        (icon_dir / "whisper-dictate.svg").write_bytes(
+        icon = icon_dir / "whisper-dictate.svg"
+        icon.write_bytes(
             (repo / "src" / "whisper_dictate" / "assets" / "whisper-dictate.svg").read_bytes())
         template = (repo / "packaging" / "whisper-dictate-settings.desktop").read_text()
         launcher = Path.home() / ".local" / "bin" / "whisper-dictate"
         apps = share / "applications"
         apps.mkdir(parents=True, exist_ok=True)
-        (apps / "whisper-dictate-settings.desktop").write_text(template.replace("@BIN@", str(launcher)))
+        (apps / "whisper-dictate-settings.desktop").write_text(template.replace("@BIN@", str(launcher)).replace("@ICON@", str(icon)))
     except OSError:
         pass

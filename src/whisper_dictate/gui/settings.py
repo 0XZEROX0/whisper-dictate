@@ -7,7 +7,7 @@ import subprocess
 import sys
 from dataclasses import replace
 
-from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMessageBox,
@@ -259,23 +259,44 @@ class Worker(QObject):
             self.failed.emit(str(exc))
 
 
+class _Callback(QObject):
+    """Runs a Python callback on the thread this object lives in (the GUI thread).
+
+    Connecting a worker signal straight to a plain function would run it on
+    the worker thread, and touching widgets from there crashes Qt.
+    """
+
+    def __init__(self, fn, parent):
+        super().__init__(parent)
+        self.fn = fn
+
+    @Slot(object)
+    def call(self, value) -> None:
+        self.fn(value)
+
+
 def run_in_thread(parent, fn, *args, on_done=None, on_failed=None, on_progress=None):
-    """Run fn(*args) on a thread. With on_progress, fn gets a progress callback as its last arg."""
+    """Run fn(*args) on a thread; callbacks run on the GUI thread.
+
+    With on_progress, fn gets a progress callback as its last argument.
+    """
     thread = QThread(parent)
     worker = Worker(fn, *args)
+    callbacks = []
+    for signal, cb in ((worker.done, on_done), (worker.failed, on_failed), (worker.progress, on_progress)):
+        if cb:
+            relay = _Callback(cb, parent)
+            signal.connect(relay.call, Qt.QueuedConnection)
+            callbacks.append(relay)
     if on_progress:
         worker.args = (*args, worker.progress.emit)
-        worker.progress.connect(on_progress)
     worker.moveToThread(thread)
-    if on_done:
-        worker.done.connect(on_done)
-    if on_failed:
-        worker.failed.connect(on_failed)
     worker.done.connect(thread.quit)
     worker.failed.connect(thread.quit)
     thread.started.connect(worker.run)
     thread.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
+    thread.finished.connect(lambda: [c.deleteLater() for c in callbacks])
     thread._worker = worker
     thread.start()
     return worker
