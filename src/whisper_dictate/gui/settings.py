@@ -397,7 +397,7 @@ class SettingsWindow(QWidget):
         self.model.currentIndexChanged.connect(self._model_changed)
         self.model_row = card.add_row("Model", " ", self.model, wide=True)
         self.engine = combo_box([
-            ("auto", "Automatic"),
+            ("auto", "Automatic (fastest)"),
             ("faster-whisper", "faster-whisper (CPU / NVIDIA)"),
             ("whisper-cpp", "whisper.cpp (GPU)"),
         ])

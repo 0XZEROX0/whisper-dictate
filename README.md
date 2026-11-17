@@ -77,8 +77,10 @@ whisper-dictate download-model          # fetches ggml-small.en.bin
 systemctl --user restart whisper-dictate
 ```
 
-With `engine.name = "auto"` the app uses whisper.cpp whenever `whisper-cli`
-is installed and no NVIDIA GPU is present.
+Then pick **whisper.cpp (GPU)** as the engine in Settings. "Automatic" always
+uses faster-whisper, because on laptop GPUs whisper.cpp is often slower than
+faster-whisper on the CPU (on an Intel Arc 140T: 2.0 s vs 1.2 s for an 11 s
+clip). Compare both on your machine.
 
 ## Use
 

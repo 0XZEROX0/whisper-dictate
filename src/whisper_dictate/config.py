@@ -30,9 +30,9 @@ combo = {hotkey}
 mode = {mode}
 
 [engine]
-# "auto" picks faster-whisper on NVIDIA (CUDA), whisper.cpp when the
-# `whisper-cli` binary is installed (Vulkan: AMD / Intel / NVIDIA),
-# and faster-whisper on CPU otherwise.
+# "auto" uses faster-whisper (NVIDIA GPU via CUDA, otherwise CPU).
+# "whisper-cpp" uses the `whisper-cli` binary, which can run on AMD / Intel
+# GPUs through Vulkan; pick it explicitly if it's faster on your machine.
 name = {engine}
 # Whisper model: tiny.en, base.en, small.en, medium.en (English only)
 # or tiny, base, small, medium, large-v3, large-v3-turbo (all languages).

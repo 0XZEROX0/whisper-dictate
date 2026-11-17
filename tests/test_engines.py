@@ -10,7 +10,7 @@ from whisper_dictate.engines.whisper_cpp import WhisperCppEngine, clean_output, 
 def test_auto_engine_choice():
     cfg = Config()
     assert choose_engine_name(cfg, has_cuda=True, has_whisper_cpp=True) == "faster-whisper"
-    assert choose_engine_name(cfg, has_cuda=False, has_whisper_cpp=True) == "whisper-cpp"
+    assert choose_engine_name(cfg, has_cuda=False, has_whisper_cpp=True) == "faster-whisper"
     assert choose_engine_name(cfg, has_cuda=False, has_whisper_cpp=False) == "faster-whisper"
     assert choose_engine_name(Config(engine="whisper-cpp"), has_cuda=True, has_whisper_cpp=False) == "whisper-cpp"
 

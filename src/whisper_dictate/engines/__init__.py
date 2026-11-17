@@ -21,17 +21,16 @@ def cuda_available() -> bool:
         return False
 
 
-def choose_engine_name(cfg: Config, *, has_cuda=None, has_whisper_cpp=None) -> str:
+def choose_engine_name(cfg: Config, *, has_cuda=None, has_whisper_cpp=None) -> str:  # noqa: ARG001
+    """Resolve "auto".
+
+    faster-whisper is the default everywhere: it uses CUDA on NVIDIA and is
+    very fast on modern CPUs. whisper.cpp (Vulkan) is only used when picked
+    explicitly, because on integrated GPUs (e.g. Intel Arc in laptops) it
+    measured slower than faster-whisper on the CPU.
+    """
     if cfg.engine != "auto":
         return cfg.engine
-    if has_cuda is None:
-        has_cuda = cuda_available()
-    if has_whisper_cpp is None:
-        has_whisper_cpp = shutil.which(cfg.whisper_cpp_binary) is not None
-    if has_cuda:
-        return "faster-whisper"
-    if has_whisper_cpp:
-        return "whisper-cpp"
     return "faster-whisper"
 
 
