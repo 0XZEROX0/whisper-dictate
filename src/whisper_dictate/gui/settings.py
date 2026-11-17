@@ -25,7 +25,7 @@ from .client import StateClient
 
 # Fields the window edits. Saving only writes the ones you changed, on top of
 # whatever is on disk, so edits made elsewhere meanwhile aren't overwritten.
-FIELDS = ("hotkey", "mode", "language", "model", "engine", "device", "typer", "trailing_space",
+FIELDS = ("hotkey", "mode", "language", "model", "engine", "device", "typer", "trailing_space", "press_enter",
           "overlay", "overlay_position", "notifications", "check_updates")
 
 STATUS = {
@@ -448,6 +448,10 @@ class SettingsWindow(QWidget):
         self.trailing = theme.ToggleSwitch()
         self.trailing.toggled.connect(self._mark)
         card.add_row("Space after each dictation", "So the next one doesn't run into it.", self.trailing)
+        self.enter = theme.ToggleSwitch()
+        self.enter.toggled.connect(self._mark)
+        card.add_row("Press Enter after typing", "Sends the message right away in chats and search boxes.",
+                     self.enter)
         col.addWidget(card)
 
         # Feedback
@@ -524,6 +528,7 @@ class SettingsWindow(QWidget):
             "device": self.device.currentData(),
             "typer": self.typer.currentData(),
             "trailing_space": self.trailing.isChecked(),
+            "press_enter": self.enter.isChecked(),
             "overlay": self.overlay.isChecked(),
             "overlay_position": self.position.currentData(),
             "notifications": self.notifications.currentData(),
@@ -540,6 +545,7 @@ class SettingsWindow(QWidget):
         set_combo(self.device, cfg.device)
         set_combo(self.typer, cfg.typer)
         self.trailing.setChecked(cfg.trailing_space)
+        self.enter.setChecked(cfg.press_enter)
         self.overlay.setChecked(cfg.overlay)
         set_combo(self.position, cfg.overlay_position)
         set_combo(self.notifications, cfg.notifications)

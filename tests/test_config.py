@@ -35,7 +35,7 @@ def test_write_default_config_roundtrip(tmp_path):
 
 def test_save_roundtrip_with_changes(tmp_path):
     cfg = Config(hotkey="shift+super+f23", mode="hold", language="ar", model="large-v3-turbo",
-                 notifications="off", overlay=False, overlay_position="top", check_updates=False)
+                 notifications="off", press_enter=True, overlay=False, overlay_position="top", check_updates=False)
     path = save_config(cfg, tmp_path / "config.toml")
     assert load_config(path) == cfg
 

@@ -34,7 +34,11 @@ class FakeEngine:
 class FakeTyper:
     def __init__(self):
         self.typed = []
+        self.enters = 0
         self.done = threading.Event()
+
+    def press_enter(self):
+        self.enters += 1
 
     def type(self, text):
         self.typed.append(text)
@@ -190,3 +194,22 @@ def test_load_failure_is_reported():
     d.load_error = "download failed"
     assert d.status() == "error: download failed"
     assert d.start().startswith("error")
+
+
+def test_press_enter_option():
+    d, typer = make()
+    d.cfg.press_enter = True
+    d.start()
+    d.stop()
+    assert typer.done.wait(2)
+    time.sleep(0.2)
+    assert typer.typed == ["hello world"] and typer.enters == 1
+
+
+def test_no_enter_by_default():
+    d, typer = make()
+    d.start()
+    d.stop()
+    assert typer.done.wait(2)
+    time.sleep(0.15)
+    assert typer.enters == 0

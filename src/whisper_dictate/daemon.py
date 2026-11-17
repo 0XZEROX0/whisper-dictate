@@ -145,13 +145,16 @@ class Dictation:
             self.notifier.show("Didn't catch that", timeout_ms=1200)
             self._flash("empty")
             return
-        if self.cfg.trailing_space:
-            text += " "
+        if self.cfg.trailing_space and not self.cfg.press_enter:
+            text += " "  # not when sending: no stray space at the end of a message
         deadline = time.monotonic() + 3.0
         while self.keys_held() and time.monotonic() < deadline:
             time.sleep(0.02)
         try:
             self.typer.type(text)
+            if self.cfg.press_enter:
+                time.sleep(0.08)  # let a paste land before Enter
+                self.typer.press_enter()
         except Exception as exc:
             log.exception("typing failed")
             self.notifier.show("Could not type text", str(exc), urgency="critical", timeout_ms=5000)

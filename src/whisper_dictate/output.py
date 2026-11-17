@@ -108,6 +108,18 @@ class Typer:
             method = "clipboard"
         getattr(self, "_type_" + method)(text)
 
+    def press_enter(self) -> None:
+        """Press Return in the focused window."""
+        session = self.session
+        if self.method == "xdotool" or (session.session_type == "x11" and shutil.which("xdotool")):
+            _run(["xdotool", "key", "--clearmodifiers", "Return"])
+        elif self.method == "wtype" or (session.is_wlroots and shutil.which("wtype")):
+            _run(["wtype", "-k", "Return"])
+        elif shutil.which("ydotool"):
+            _run(["ydotool", "key", "28:1", "28:0"], env=_ydotool_env())  # 28 = KEY_ENTER
+        else:
+            raise RuntimeError("no key injector found to press Enter")
+
     def _type_ydotool(self, text: str) -> None:
         _run(["ydotool", "type", "--key-delay", "3", "--file", "-"], input=text, env=_ydotool_env())
 

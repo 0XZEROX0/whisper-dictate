@@ -53,6 +53,8 @@ whisper_cpp_binary = {whisper_cpp_binary}
 typer = {typer}
 # Add a space after each dictation so consecutive ones don't run together.
 trailing_space = {trailing_space}
+# Press Enter after typing, e.g. to send a chat message right away.
+press_enter = {press_enter}
 
 [feedback]
 # Floating animation while listening / transcribing.
@@ -95,6 +97,7 @@ class Config:
     whisper_cpp_binary: str = "whisper-cli"
     typer: str = "auto"
     trailing_space: bool = True
+    press_enter: bool = False
     notifications: str = "errors"
     overlay: bool = True
     overlay_position: str = "bottom"
@@ -127,6 +130,7 @@ _SECTION_MAP = {
     ("engine", "whisper_cpp_binary"): "whisper_cpp_binary",
     ("output", "typer"): "typer",
     ("output", "trailing_space"): "trailing_space",
+    ("output", "press_enter"): "press_enter",
     ("feedback", "notifications"): "notifications",
     ("feedback", "overlay"): "overlay",
     ("feedback", "overlay_position"): "overlay_position",
