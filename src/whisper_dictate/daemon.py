@@ -32,6 +32,10 @@ class Dictation:
         self._lock = threading.Lock()
         self._jobs: queue.Queue = queue.Queue()
         self._busy = 0
+        # The model loads in the background; until then dictation is refused
+        # instead of hanging in "transcribing" while the model downloads.
+        self.ready = threading.Event()
+        self.load_error = ""
         self._worker = threading.Thread(target=self._work, daemon=True, name="transcribe")
         self._worker.start()
         self.last_text = ""
@@ -46,6 +50,9 @@ class Dictation:
         return self.recorder.recording
 
     def start(self) -> str:
+        if not self.ready.is_set():
+            self._flash("loading" if not self.load_error else "error")
+            return "error: " + self.load_error if self.load_error else "loading"
         with self._lock:
             if self.recorder.recording:
                 return "already recording"
@@ -86,6 +93,10 @@ class Dictation:
         return "cancelled"
 
     def status(self) -> str:
+        if self.load_error:
+            return "error: " + self.load_error
+        if not self.ready.is_set():
+            return "loading"
         if self.recorder.recording:
             return "recording"
         return "transcribing" if self._busy else "idle"
@@ -159,7 +170,11 @@ class Dictation:
         if self._busy:
             return "transcribing", 0.0
         name, at = self._event
-        if name and time.monotonic() - at < 0.9:
+        recent = name and time.monotonic() - at < (2.0 if name in ("loading", "error") else 0.9)
+        if not self.ready.is_set() and not recent:
+            # Not shown by the pill, but the Settings window displays it.
+            return ("failed" if self.load_error else "starting"), 0.0
+        if name and time.monotonic() - at < (2.0 if name in ("loading", "error") else 0.9):
             return name, 0.0
         return "idle", 0.0
 
@@ -264,17 +279,22 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False, no_overlay: bool = False
         overlay = OverlayProcess()
         overlay.start()
 
-    log.info("loading model (%s)…", engine.describe())
-    try:
-        engine.load()
-    except Exception as exc:
-        log.error("%s", exc)
-        notifier.show("whisper-dictate failed to start", str(exc), urgency="critical", timeout_ms=8000)
-        if overlay:
-            overlay.stop()
-        server.close()
-        return 1
-    log.info("model ready: %s", engine.describe())
+    def load_model() -> None:
+        log.info("loading model (%s)…", engine.describe())
+        try:
+            engine.load()
+        except Exception as exc:
+            log.error("model failed to load: %s", exc)
+            dictation.load_error = str(exc) or exc.__class__.__name__
+            notifier.show("whisper-dictate: model failed to load", str(exc), urgency="critical",
+                          timeout_ms=8000)
+            return
+        dictation.ready.set()
+        log.info("model ready: %s", engine.describe())
+
+    # Load (and maybe download) the model off the main thread, so the service
+    # answers commands and stops promptly while that's happening.
+    threading.Thread(target=load_model, daemon=True, name="load-model").start()
 
     listener = None
     if cfg.hotkey and not no_hotkey:

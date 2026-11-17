@@ -36,6 +36,9 @@ STATUS = {
     "empty": ("Ready", theme.GREEN),
     "error": ("Error", theme.RED),
     "offline": ("Not running", theme.MUTED),
+    "loading": ("Loading model", theme.AMBER),
+    "starting": ("Loading model", theme.AMBER),
+    "failed": ("Model failed to load", theme.RED),
 }
 
 
@@ -643,7 +646,9 @@ class SettingsWindow(QWidget):
             pass
 
     def _systemctl(self, action: str) -> None:
-        subprocess.run(["systemctl", "--user", action, "whisper-dictate.service"], capture_output=True)
+        # --no-block: never freeze the window waiting for the service.
+        subprocess.Popen(["systemctl", "--user", "--no-block", action, "whisper-dictate.service"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # -- save -----------------------------------------------------------------------------
     def _save(self) -> None:

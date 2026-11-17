@@ -52,6 +52,7 @@ class FakeNotifier:
 def make(mode="toggle", seconds=1.0, text="hello world"):
     typer = FakeTyper()
     d = Dictation(Config(mode=mode), FakeRecorder(seconds), FakeEngine(text), typer, FakeNotifier())
+    d.ready.set()
     return d, typer
 
 
@@ -170,3 +171,22 @@ def test_subscribe_stream(tmp_path):
     finally:
         b.stop()
         server.close()
+
+
+def test_refuses_dictation_until_model_ready():
+    typer = FakeTyper()
+    d = Dictation(Config(), FakeRecorder(), FakeEngine(), typer, FakeNotifier())
+    assert d.status() == "loading"
+    assert d.overlay_state()[0] == "starting"
+    assert d.toggle() == "loading"
+    assert not d.recording
+    assert d.overlay_state()[0] == "loading"  # brief pill so the key press isn't ignored silently
+    d.ready.set()
+    assert d.toggle() == "recording"
+
+
+def test_load_failure_is_reported():
+    d = Dictation(Config(), FakeRecorder(), FakeEngine(), FakeTyper(), FakeNotifier())
+    d.load_error = "download failed"
+    assert d.status() == "error: download failed"
+    assert d.start().startswith("error")

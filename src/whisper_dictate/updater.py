@@ -104,5 +104,10 @@ def _refresh_desktop_files(repo: Path) -> None:
         apps = share / "applications"
         apps.mkdir(parents=True, exist_ok=True)
         (apps / "whisper-dictate-settings.desktop").write_text(template.replace("@BIN@", str(launcher)).replace("@ICON@", str(icon)))
-    except OSError:
+        units = Path.home() / ".config" / "systemd" / "user"
+        if (units / "whisper-dictate.service").exists():
+            (units / "whisper-dictate.service").write_text(
+                (repo / "packaging" / "whisper-dictate.service").read_text())
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
         pass

@@ -26,6 +26,7 @@ LABELS = {
     "done": "Typed",
     "empty": "Didn't catch that",
     "error": "Something went wrong",
+    "loading": "Loading model…",
 }
 COLORS = {
     "recording": QColor(theme.RED),
@@ -33,6 +34,7 @@ COLORS = {
     "done": QColor(theme.GREEN),
     "empty": QColor(theme.MUTED),
     "error": QColor(theme.RED),
+    "loading": QColor(theme.AMBER),
 }
 WIDTH, HEIGHT, MARGIN = 236, 52, 56
 BARS = 9
@@ -130,7 +132,7 @@ class Overlay(QWidget):
         icon = QRectF(16, 0, 64, HEIGHT)
         if self.state == "recording":
             self._draw_bars(p, icon, color, t)
-        elif self.state == "transcribing":
+        elif self.state in ("transcribing", "loading"):
             self._draw_dots(p, icon, color, t)
         elif self.state == "done":
             self._draw_check(p, icon, color)
