@@ -59,7 +59,7 @@ class FasterWhisperEngine(Engine):
         self.load()
         segments, _ = self._model.transcribe(
             audio,
-            language=self.cfg.language or None,
+            language=None if self.cfg.language in ("", "auto") else self.cfg.language,
             beam_size=5,
             vad_filter=True,
             condition_on_previous_text=False,

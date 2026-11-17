@@ -63,8 +63,7 @@ class WhisperCppEngine(Engine):
             "--no-timestamps",
             "--no-prints",
         ]
-        if self.cfg.language:
-            cmd += ["-l", self.cfg.language]
+        cmd += ["-l", self.cfg.language or "auto"]
         return cmd
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:

@@ -12,6 +12,7 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 COMMANDS = ("toggle", "start", "stop", "cancel", "status", "quit")
+STREAM_COMMAND = "subscribe"
 
 
 def socket_path() -> Path:
@@ -42,6 +43,8 @@ class IPCServer(threading.Thread):
         self.path = path or socket_path()
         self._sock: socket.socket | None = None
         self._ready = threading.Event()
+        # Called with the open socket for "subscribe"; it owns the socket.
+        self.on_subscribe: Callable[[socket.socket], None] | None = None
 
     def bind(self) -> None:
         if self.path.exists():
@@ -67,10 +70,18 @@ class IPCServer(threading.Thread):
                 conn, _ = self._sock.accept()
             except OSError:
                 return
+            try:
+                conn.settimeout(5.0)
+                line = _readline(conn)
+            except OSError:
+                conn.close()
+                continue
+            if line == STREAM_COMMAND and self.on_subscribe is not None:
+                conn.settimeout(None)
+                self.on_subscribe(conn)
+                continue
             with conn:
                 try:
-                    conn.settimeout(5.0)
-                    line = conn.makefile().readline().strip()
                     reply = self.handler(line) if line in COMMANDS else f"error: unknown command {line!r}"
                 except Exception as exc:  # keep the server alive
                     log.exception("ipc handler failed")
@@ -88,3 +99,29 @@ class IPCServer(threading.Thread):
             self.path.unlink()
         except FileNotFoundError:
             pass
+
+
+def _readline(conn: socket.socket, limit: int = 1024) -> str:
+    data = b""
+    while not data.endswith(b"\n") and len(data) < limit:
+        chunk = conn.recv(1)
+        if not chunk:
+            break
+        data += chunk
+    return data.decode(errors="replace").strip()
+
+
+def subscribe(path: Path | None = None, timeout: float | None = None):
+    """Yield (state, level) tuples from the daemon until it goes away."""
+    path = path or socket_path()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    sock.connect(str(path))
+    sock.sendall(STREAM_COMMAND.encode() + b"\n")
+    with sock, sock.makefile() as fh:
+        for line in fh:
+            parts = line.split()
+            if not parts:
+                continue
+            level = float(parts[1]) if len(parts) > 1 else 0.0
+            yield parts[0], level

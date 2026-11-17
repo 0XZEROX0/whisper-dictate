@@ -8,7 +8,11 @@ your words are typed into whatever window has focus. Speech recognition runs
 - **Hold-to-talk** or **toggle** (press to start, press again to stop).
 - Uses your GPU when it can: **NVIDIA** through CUDA (faster-whisper),
   **AMD and Intel Arc** through Vulkan (whisper.cpp). Falls back to the CPU.
-- English to start (the model can do other languages later).
+- A floating animation shows when it's listening (bars move with your voice)
+  and when it's transcribing.
+- A **Settings** window ("Voice Dictation" in your app menu): record a new
+  shortcut, pick the language and model, switch hold/toggle, and update the app.
+- English by default; switch language in Settings (needs a multilingual model).
 
 ## Install (CachyOS / Arch)
 
@@ -47,17 +51,25 @@ is installed and no NVIDIA GPU is present.
 
 ## Use
 
-Default shortcut: **Ctrl+Alt+Space**.
+Default shortcut: **Ctrl+Alt+Space**. Change it in Settings: click the
+shortcut button and press the keys you want. Single keys work too, such as
+Right Ctrl, F9, or the **Copilot key** on newer laptops (it sends
+Shift+Super+F23).
 
 - **toggle** mode (default): press once, speak, press again.
 - **hold** mode: hold the keys while you speak, let go to type.
 
-A notification shows when it is listening and when it is done.
+While you speak, a small pill at the bottom of the screen shows moving bars;
+then "Transcribing…", then a check mark when the text is typed. It never takes
+focus, so the text still goes where your cursor is. Notifications only appear
+for errors.
 
 Other commands:
 
 ```
 whisper-dictate toggle | start | stop | cancel | status
+whisper-dictate settings    # open the Settings window
+whisper-dictate update      # update to the latest version (--check to only look)
 whisper-dictate doctor      # check your setup
 whisper-dictate init-config # write the config file with comments
 ```
@@ -80,6 +92,11 @@ name = "auto"              # "faster-whisper" or "whisper-cpp"
 model = "small.en"         # tiny.en, base.en, small.en, medium.en, large-v3-turbo
 device = "auto"            # faster-whisper: "cuda" or "cpu"
 
+[feedback]
+overlay = true             # floating listening animation
+overlay_position = "bottom"
+notifications = "errors"   # "errors", "all" or "off"
+
 [output]
 typer = "auto"             # ydotool, wtype, xdotool, clipboard
 trailing_space = true
@@ -90,6 +107,13 @@ Restart after editing: `systemctl --user restart whisper-dictate`.
 **Picking a model:** `small.en` is a good default on any recent CPU.
 With a GPU, try `medium.en` or `large-v3-turbo` for better accuracy.
 On a slow laptop use `base.en`.
+
+## Updates
+
+Settings checks for a new version each time it opens (you can turn that off),
+and has a **Check for updates** button. Updating pulls the latest code from
+GitHub into the folder you installed from, reinstalls it, and restarts the
+background service. From a terminal: `whisper-dictate update`.
 
 ## How it works
 

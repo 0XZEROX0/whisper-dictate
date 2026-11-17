@@ -1,4 +1,9 @@
-"""Desktop notifications through notify-send."""
+"""Desktop notifications through notify-send.
+
+With the on-screen overlay, notifications are only needed for errors, so
+that is the default. All notifications are marked transient so they don't
+pile up in the notification center.
+"""
 
 from __future__ import annotations
 
@@ -7,11 +12,20 @@ import subprocess
 
 
 class Notifier:
-    def __init__(self, enabled: bool = True):
-        self.enabled = enabled and shutil.which("notify-send") is not None
+    def __init__(self, mode: str | bool = "errors"):
+        if isinstance(mode, bool):
+            mode = "errors" if mode else "off"
+        self.mode = mode
+        self.available = shutil.which("notify-send") is not None
 
-    def show(self, summary: str, body: str = "", urgency: str = "low", timeout_ms: int = 1500) -> None:
-        if not self.enabled:
+    def wants(self, error: bool) -> bool:
+        if not self.available or self.mode == "off":
+            return False
+        return error or self.mode == "all"
+
+    def show(self, summary: str, body: str = "", urgency: str = "low",
+             timeout_ms: int = 1500, error: bool = False) -> None:
+        if not self.wants(error or urgency == "critical"):
             return
         cmd = [
             "notify-send",
@@ -19,7 +33,7 @@ class Notifier:
             f"--urgency={urgency}",
             f"--expire-time={timeout_ms}",
             "--icon=audio-input-microphone",
-            # Replace the previous bubble instead of stacking them.
+            "--hint=boolean:transient:true",
             "--hint=string:x-canonical-private-synchronous:whisper-dictate",
             summary,
         ]

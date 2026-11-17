@@ -38,6 +38,7 @@ class Dictation:
         # Returns True while hotkey keys are physically held. Typing while
         # Ctrl/Alt are down would turn letters into shortcuts, so we wait.
         self.keys_held = lambda: False
+        self._event = ("", 0.0)  # (name, monotonic time) of the last outcome
 
     # -- commands -------------------------------------------------------
     @property
@@ -81,6 +82,7 @@ class Dictation:
                 return "not recording"
             self.recorder.stop()
         self.notifier.show("Cancelled", timeout_ms=1000)
+        self._flash("empty")
         return "cancelled"
 
     def status(self) -> str:
@@ -123,11 +125,13 @@ class Dictation:
         except Exception as exc:
             log.exception("transcription failed")
             self.notifier.show("Transcription failed", str(exc), urgency="critical", timeout_ms=5000)
+            self._flash("error")
             return
         log.info("transcribed %.1fs of audio in %.2fs: %r",
                  len(audio) / self.cfg.sample_rate, time.monotonic() - t0, text)
         if not text:
             self.notifier.show("Didn't catch that", timeout_ms=1200)
+            self._flash("empty")
             return
         if self.cfg.trailing_space:
             text += " "
@@ -139,9 +143,25 @@ class Dictation:
         except Exception as exc:
             log.exception("typing failed")
             self.notifier.show("Could not type text", str(exc), urgency="critical", timeout_ms=5000)
+            self._flash("error")
             return
         self.last_text = text
         self.notifier.show("Done", text.strip()[:80], timeout_ms=1200)
+        self._flash("done")
+
+    def _flash(self, name: str) -> None:
+        self._event = (name, time.monotonic())
+
+    def overlay_state(self) -> tuple[str, float]:
+        """State for the on-screen indicator, plus the mic level (0..1)."""
+        if self.recorder.recording:
+            return "recording", getattr(self.recorder, "level", 0.0)
+        if self._busy:
+            return "transcribing", 0.0
+        name, at = self._event
+        if name and time.monotonic() - at < 0.9:
+            return name, 0.0
+        return "idle", 0.0
 
     def shutdown(self) -> None:
         if self.recorder.recording:
@@ -149,7 +169,63 @@ class Dictation:
         self._jobs.put(None)
 
 
-def run_daemon(cfg: Config, *, no_hotkey: bool = False) -> int:
+class Broadcaster(threading.Thread):
+    """Streams the overlay state to subscribed clients (the overlay, the settings window)."""
+
+    def __init__(self, source, interval: float = 0.04):
+        super().__init__(daemon=True, name="broadcast")
+        self.source = source
+        self.interval = interval
+        self._clients: list = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    def add(self, conn) -> None:
+        with self._lock:
+            self._clients.append(conn)
+        self._send_to([conn], self._line())
+
+    def _line(self) -> bytes:
+        state, level = self.source()
+        return f"{state} {level:.3f}\n".encode()
+
+    def _send_to(self, clients, data: bytes) -> None:
+        dead = []
+        for conn in clients:
+            try:
+                conn.sendall(data)
+            except OSError:
+                dead.append(conn)
+        if dead:
+            with self._lock:
+                for conn in dead:
+                    if conn in self._clients:
+                        self._clients.remove(conn)
+                    conn.close()
+
+    def run(self) -> None:
+        last, last_sent = b"", 0.0
+        while not self._stop.wait(self.interval):
+            with self._lock:
+                clients = list(self._clients)
+            if not clients:
+                continue
+            line = self._line()
+            now = time.monotonic()
+            # Send on change, continuously while recording, and a heartbeat every second.
+            if line != last or line.startswith(b"recording") or now - last_sent > 1.0:
+                self._send_to(clients, line)
+                last, last_sent = line, now
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._lock:
+            for conn in self._clients:
+                conn.close()
+            self._clients.clear()
+
+
+def run_daemon(cfg: Config, *, no_hotkey: bool = False, no_overlay: bool = False) -> int:
     from .audio import Recorder
     from .engines import create_engine
     from .ipc import IPCServer
@@ -174,9 +250,19 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False) -> int:
             return "bye"
         return dictation.handle(cmd)
 
+    broadcaster = Broadcaster(dictation.overlay_state)
+    broadcaster.start()
     server = IPCServer(handler)
+    server.on_subscribe = broadcaster.add
     server.bind()
     server.start()
+
+    overlay = None
+    if cfg.overlay and not no_overlay:
+        from .overlay_launcher import OverlayProcess
+
+        overlay = OverlayProcess()
+        overlay.start()
 
     log.info("loading model (%s)…", engine.describe())
     try:
@@ -184,6 +270,8 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False) -> int:
     except Exception as exc:
         log.error("%s", exc)
         notifier.show("whisper-dictate failed to start", str(exc), urgency="critical", timeout_ms=8000)
+        if overlay:
+            overlay.stop()
         server.close()
         return 1
     log.info("model ready: %s", engine.describe())
@@ -202,13 +290,17 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False) -> int:
         except ImportError:
             log.warning("python-evdev missing; built-in hotkey disabled. Bind `whisper-dictate toggle` instead.")
 
-    notifier.show("whisper-dictate ready", f"{cfg.hotkey or 'whisper-dictate toggle'} to dictate", timeout_ms=2500)
     try:
         while not stop.is_set():
             stop.wait(0.5)
+            if overlay:
+                overlay.check()
     finally:
         if listener:
             listener.stop()
+        if overlay:
+            overlay.stop()
+        broadcaster.stop()
         dictation.shutdown()
         server.close()
     return 0

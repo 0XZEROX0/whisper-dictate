@@ -8,7 +8,6 @@ import logging
 import os
 import shutil
 import sys
-import urllib.request
 
 from . import __version__
 from .config import config_path, data_dir, load_config, write_default_config
@@ -96,27 +95,35 @@ def doctor() -> int:
 
 
 def download_model(name: str | None) -> int:
-    from .engines.whisper_cpp import MODEL_URL
+    from .models import download_whisper_cpp_model, whisper_cpp_model_path
 
-    cfg = load_config()
-    model = name or cfg.model
-    dest = data_dir() / "models" / f"ggml-{model}.bin"
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    model = name or load_config().model
+    dest = whisper_cpp_model_path(model)
     if dest.exists():
         print(f"already have {dest}")
         return 0
-    url = MODEL_URL.format(model=model)
-    print(f"downloading {url}\n  -> {dest}")
-    tmp = dest.with_suffix(".part")
-
-    def progress(blocks, block_size, total):
-        if total > 0:
-            pct = min(100, blocks * block_size * 100 // total)
-            print(f"\r  {pct:3d}%", end="", flush=True)
-
-    urllib.request.urlretrieve(url, tmp, progress)
-    tmp.rename(dest)
+    print(f"downloading ggml-{model}.bin -> {dest}")
+    download_whisper_cpp_model(model, lambda pct: print(f"\r  {pct:3d}%", end="", flush=True))
     print("\ndone")
+    return 0
+
+
+def update(check_only: bool) -> int:
+    from . import updater
+
+    info = updater.check()
+    if info.error:
+        print(f"couldn't check for updates: {info.error}", file=sys.stderr)
+        return 1
+    if not info.available:
+        print(f"up to date ({info.current})")
+        return 0
+    print(f"update available: {info.current} -> {info.latest}")
+    for change in info.changes:
+        print(f"  - {change}")
+    if check_only:
+        return 0
+    updater.apply()
     return 0
 
 
@@ -128,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d = sub.add_parser("daemon", help="run the background service")
     d.add_argument("--no-hotkey", action="store_true", help="don't listen for the built-in hotkey")
+    d.add_argument("--no-overlay", action="store_true", help="don't show the on-screen indicator")
     for name, text in (
         ("toggle", "start or stop dictation (bind this to a shortcut)"),
         ("start", "start recording"),
@@ -138,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     ):
         sub.add_parser(name, help=text)
     sub.add_parser("doctor", help="check your setup")
+    sub.add_parser("settings", help="open the settings window")
+    sub.add_parser("overlay", help="run the on-screen indicator (the daemon starts it for you)")
+    up = sub.add_parser("update", help="update to the latest version")
+    up.add_argument("--check", action="store_true", help="only check, don't install")
     sub.add_parser("init-config", help=f"write a default config to {config_path()}")
     dm = sub.add_parser("download-model", help="download a whisper.cpp model")
     dm.add_argument("model", nargs="?", help="e.g. small.en, base.en, large-v3-turbo")
@@ -150,7 +162,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "daemon":
         from .daemon import run_daemon
-        return run_daemon(load_config(), no_hotkey=args.no_hotkey)
+        return run_daemon(load_config(), no_hotkey=args.no_hotkey, no_overlay=args.no_overlay)
+    if args.cmd in ("settings", "overlay"):
+        try:
+            import PySide6  # noqa: F401
+        except ImportError:
+            print("The GUI needs PySide6: pip install 'whisper-dictate[gui]' "
+                  "(or re-run install.sh)", file=sys.stderr)
+            return 1
+        if args.cmd == "settings":
+            from .gui.settings import run_settings
+            return run_settings()
+        from .gui.overlay import run_overlay
+        return run_overlay()
+    if args.cmd == "update":
+        return update(args.check)
     if args.cmd in ("toggle", "start", "stop", "cancel", "status", "quit"):
         return _client(args.cmd)
     if args.cmd == "doctor":

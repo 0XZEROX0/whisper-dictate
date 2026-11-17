@@ -42,7 +42,9 @@ say "Creating Python environment in $VENV"
 mkdir -p "$DATA_DIR" "$BIN_DIR" "$UNIT_DIR"
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet "$REPO_DIR[faster-whisper]"
+"$VENV/bin/pip" install --quiet "$REPO_DIR[faster-whisper,gui]"
+# Remember where the code lives so the app can update itself.
+printf '{"repo": "%s"}\n' "$REPO_DIR" > "$DATA_DIR/install.json"
 
 LD_EXTRA=""
 if command -v nvidia-smi >/dev/null && nvidia-smi -L >/dev/null 2>&1; then
@@ -67,7 +69,14 @@ exec "$VENV/bin/whisper-dictate" "\$@"
 LAUNCHER
 chmod +x "$BIN_DIR/whisper-dictate"
 
-# 5. Config and services -----------------------------------------------------
+# 5. App menu entry -----------------------------------------------------------
+APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$APP_DIR"
+sed "s|@BIN@|$BIN_DIR/whisper-dictate|g" "$REPO_DIR/packaging/whisper-dictate-settings.desktop" \
+  > "$APP_DIR/whisper-dictate-settings.desktop"
+command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
+
+# 6. Config and services -----------------------------------------------------
 "$BIN_DIR/whisper-dictate" init-config >/dev/null
 install -m 644 "$REPO_DIR/packaging/whisper-dictate.service" "$UNIT_DIR/"
 systemctl --user daemon-reload
@@ -86,4 +95,5 @@ else
   systemctl --user restart ydotool.service 2>/dev/null || true
   systemctl --user restart whisper-dictate.service
   echo "  Running:  press Ctrl+Alt+Space, speak, press it again."
+  echo "  Settings: open 'Voice Dictation' from your app menu."
 fi

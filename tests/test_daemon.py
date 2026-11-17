@@ -132,3 +132,41 @@ def test_waits_for_hotkey_release_before_typing():
     assert typer.typed == []
     held["v"] = False
     assert typer.done.wait(2)
+
+
+def test_overlay_state_follows_dictation():
+    d, typer = make()
+    assert d.overlay_state()[0] == "idle"
+    d.recorder.level = 0.7
+    d.start()
+    assert d.overlay_state() == ("recording", 0.7)
+    d.stop()
+    assert typer.done.wait(2)
+    time.sleep(0.05)
+    assert d.overlay_state()[0] == "done"
+
+
+def test_subscribe_stream(tmp_path):
+    from whisper_dictate.daemon import Broadcaster
+    from whisper_dictate.ipc import subscribe
+
+    d, typer = make()
+    b = Broadcaster(d.overlay_state, interval=0.01)
+    b.start()
+    server = IPCServer(d.handle, tmp_path / "s.sock")
+    server.on_subscribe = b.add
+    server.bind()
+    server.start()
+    try:
+        stream = subscribe(server.path, timeout=2)
+        assert next(stream)[0] == "idle"
+        d.start()
+        state = next(stream)
+        while state[0] == "idle":
+            state = next(stream)
+        assert state[0] == "recording"
+        # normal commands still work alongside a subscriber
+        assert send_command("status", server.path) == "recording"
+    finally:
+        b.stop()
+        server.close()

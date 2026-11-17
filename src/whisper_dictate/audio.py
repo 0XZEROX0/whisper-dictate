@@ -15,14 +15,20 @@ class Recorder:
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream = None
+        self.level = 0.0  # 0..1, loudness of the latest chunk
 
     @property
     def recording(self) -> bool:
         return self._stream is not None
 
     def _callback(self, indata, frames, time, status):  # noqa: ARG002
+        chunk = indata[:, 0].copy()
+        rms = float(np.sqrt(np.mean(chunk * chunk))) if len(chunk) else 0.0
+        # Map roughly -50 dB..-10 dB to 0..1 so normal speech fills the meter.
+        db = 20 * np.log10(max(rms, 1e-6))
+        self.level = float(min(1.0, max(0.0, (db + 50) / 40)))
         with self._lock:
-            self._chunks.append(indata[:, 0].copy())
+            self._chunks.append(chunk)
 
     def start(self) -> None:
         import sounddevice as sd
@@ -41,6 +47,7 @@ class Recorder:
 
     def stop(self) -> np.ndarray:
         stream, self._stream = self._stream, None
+        self.level = 0.0
         if stream is not None:
             stream.stop()
             stream.close()

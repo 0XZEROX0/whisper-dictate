@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whisper-dictate"
-version = "0.1.0"
+version = "0.2.0"
 description = "System-wide push-to-talk voice typing for Linux, powered by local Whisper"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,8 @@ dependencies = [
 # faster-whisper: CPU everywhere, GPU on NVIDIA (CUDA).
 # AMD / Intel GPUs use whisper.cpp (Vulkan) instead, which is a system binary.
 faster-whisper = ["faster-whisper>=1.0"]
+# Settings window, on-screen indicator and tray icon.
+gui = ["PySide6-Essentials>=6.6"]
 dev = ["pytest>=7"]
 
 [project.scripts]

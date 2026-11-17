@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -11,46 +12,75 @@ VALID_MODES = ("toggle", "hold")
 VALID_ENGINES = ("auto", "faster-whisper", "whisper-cpp")
 VALID_DEVICES = ("auto", "cuda", "cpu")
 VALID_TYPERS = ("auto", "ydotool", "wtype", "xdotool", "clipboard")
+VALID_NOTIFICATIONS = ("errors", "all", "off")
+VALID_POSITIONS = ("bottom", "top")
 
-DEFAULT_CONFIG = """\
+CONFIG_TEMPLATE = """\
 # whisper-dictate configuration
+# Edit by hand or with the Settings app (whisper-dictate settings).
 
 [hotkey]
 # Key combo that triggers dictation. Modifiers: ctrl, alt, shift, super.
 # Any evdev key name works too, e.g. "KEY_RIGHTCTRL" or "KEY_F9".
 # Set to "" to disable the built-in listener and bind
 # `whisper-dictate toggle` in your desktop's shortcut settings instead.
-combo = "ctrl+alt+space"
+combo = {hotkey}
 # "hold": record while the combo is held, transcribe on release.
 # "toggle": press once to start, press again to stop.
-mode = "toggle"
+mode = {mode}
 
 [engine]
 # "auto" picks faster-whisper on NVIDIA (CUDA), whisper.cpp when the
 # `whisper-cli` binary is installed (Vulkan: AMD / Intel / NVIDIA),
 # and faster-whisper on CPU otherwise.
-name = "auto"
-# Whisper model: tiny.en, base.en, small.en, medium.en, large-v3,
-# large-v3-turbo, distil-large-v3 ...
-model = "small.en"
+name = {engine}
+# Whisper model: tiny.en, base.en, small.en, medium.en (English only)
+# or tiny, base, small, medium, large-v3, large-v3-turbo (all languages).
+model = {model}
 # faster-whisper only: "auto", "cuda" or "cpu".
-device = "auto"
-language = "en"
+device = {device}
+# Spoken language code ("en", "ar", "fr", ...) or "auto" to detect it.
+# Anything other than "en" needs a model without ".en".
+language = {language}
 # whisper.cpp only: path to a ggml model file. Empty means
 # ~/.local/share/whisper-dictate/models/ggml-<model>.bin
-whisper_cpp_model_path = ""
-whisper_cpp_binary = "whisper-cli"
+whisper_cpp_model_path = {whisper_cpp_model_path}
+whisper_cpp_binary = {whisper_cpp_binary}
 
 [output]
 # How text reaches the focused window: "auto", "ydotool", "wtype",
 # "xdotool" or "clipboard" (copies, then sends Ctrl+V).
-typer = "auto"
+typer = {typer}
 # Add a space after each dictation so consecutive ones don't run together.
-trailing_space = true
+trailing_space = {trailing_space}
 
 [feedback]
-notifications = true
+# Floating animation while listening / transcribing.
+overlay = {overlay}
+# "bottom" or "top" of the screen.
+overlay_position = {overlay_position}
+# Desktop notifications: "errors" (default), "all" or "off".
+notifications = {notifications}
+
+[app]
+# Look for a new version when the Settings window opens.
+check_updates = {check_updates}
 """
+
+
+def _toml(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value))
+
+
+def render_config(cfg: "Config") -> str:
+    return CONFIG_TEMPLATE.format(**{
+        name: _toml(getattr(cfg, name))
+        for name in set(_SECTION_MAP.values())
+    })
 
 
 @dataclass
@@ -65,7 +95,10 @@ class Config:
     whisper_cpp_binary: str = "whisper-cli"
     typer: str = "auto"
     trailing_space: bool = True
-    notifications: bool = True
+    notifications: str = "errors"
+    overlay: bool = True
+    overlay_position: str = "bottom"
+    check_updates: bool = True
     sample_rate: int = 16000
     min_seconds: float = 0.3
     extra: dict = field(default_factory=dict)
@@ -76,6 +109,8 @@ class Config:
             ("engine.name", self.engine, VALID_ENGINES),
             ("engine.device", self.device, VALID_DEVICES),
             ("output.typer", self.typer, VALID_TYPERS),
+            ("feedback.notifications", self.notifications, VALID_NOTIFICATIONS),
+            ("feedback.overlay_position", self.overlay_position, VALID_POSITIONS),
         ):
             if value not in allowed:
                 raise ValueError(f"{name} must be one of {allowed}, got {value!r}")
@@ -93,6 +128,9 @@ _SECTION_MAP = {
     ("output", "typer"): "typer",
     ("output", "trailing_space"): "trailing_space",
     ("feedback", "notifications"): "notifications",
+    ("feedback", "overlay"): "overlay",
+    ("feedback", "overlay_position"): "overlay_position",
+    ("app", "check_updates"): "check_updates",
 }
 
 
@@ -117,6 +155,8 @@ def parse_config(data: dict) -> Config:
         if section in data and key in data[section]:
             assert attr in known
             setattr(cfg, attr, data[section][key])
+    if isinstance(cfg.notifications, bool):  # v0.1 used true/false
+        cfg.notifications = "errors" if cfg.notifications else "off"
     cfg.validate()
     return cfg
 
@@ -133,5 +173,19 @@ def write_default_config(path: Path | None = None) -> Path:
     path = path or config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text(DEFAULT_CONFIG)
+        path.write_text(render_config(Config()))
     return path
+
+
+def save_config(cfg: Config, path: Path | None = None) -> Path:
+    cfg.validate()
+    path = path or config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(render_config(cfg))
+    tmp.replace(path)
+    return path
+
+
+def model_is_english_only(model: str) -> bool:
+    return model.endswith(".en")
