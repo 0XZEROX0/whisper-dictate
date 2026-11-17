@@ -30,7 +30,7 @@ The installer:
 If it added you to the `input` group, **log out and back in once**.
 Then run `whisper-dictate doctor` to check everything.
 
-The first dictation downloads the Whisper model (about 480 MB for `small.en`).
+The first start downloads the Whisper model (about 480 MB for `small.en`).
 
 ### AMD or Intel GPU
 
