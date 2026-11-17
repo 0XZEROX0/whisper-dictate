@@ -8,6 +8,7 @@ import sys
 from dataclasses import replace
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMessageBox,
     QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -604,8 +605,11 @@ class SettingsWindow(QWidget):
     def _show_status(self, state: str) -> None:
         text, color = STATUS.get(state, (state, theme.MUTED))
         self.status_pill.setText(f"●  {text}")
+        c = QColor(color)
+        rgb = f"{c.red()}, {c.green()}, {c.blue()}"
+        # Qt reads 8-digit hex as #AARRGGBB, so tints use rgba().
         self.status_pill.setStyleSheet(
-            f"color: {color}; background: {color}22; border: 1px solid {color}55;")
+            f"color: {color}; background: rgba({rgb}, 0.14); border: 1px solid rgba({rgb}, 0.35);")
         running = state != "offline"
         self.start_btn.setVisible(not running)
         self.test_btn.setVisible(running)
