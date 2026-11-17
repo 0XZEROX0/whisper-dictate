@@ -86,7 +86,12 @@ class Typer:
     def type(self, text: str) -> None:
         if not text:
             return
-        getattr(self, "_type_" + self.method)(text)
+        method = self.method
+        # ydotool presses physical keys for a US layout, so it can't type
+        # letters like é, ß or Arabic script. Paste those instead.
+        if method == "ydotool" and not text.isascii():
+            method = "clipboard"
+        getattr(self, "_type_" + method)(text)
 
     def _type_ydotool(self, text: str) -> None:
         _run(["ydotool", "type", "--key-delay", "3", "--file", "-"], input=text, env=_ydotool_env())

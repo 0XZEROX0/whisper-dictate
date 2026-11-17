@@ -35,3 +35,16 @@ def test_session_from_env():
     assert SessionInfo.from_env({"WAYLAND_DISPLAY": "wayland-0"}).session_type == "wayland"
     assert SessionInfo.from_env({"DISPLAY": ":0"}).session_type == "x11"
     assert SessionInfo.from_env({"XDG_CURRENT_DESKTOP": "Hyprland"}).is_wlroots
+
+
+def test_ydotool_pastes_non_ascii(monkeypatch):
+    from whisper_dictate.output import Typer
+
+    used = []
+    t = Typer("ydotool", s("wayland", "gnome"))
+    monkeypatch.setattr(t, "_type_ydotool", lambda text: used.append(("ydotool", text)))
+    monkeypatch.setattr(t, "_type_clipboard", lambda text: used.append(("clipboard", text)))
+    t.type("hello ")
+    t.type("مرحبا ")
+    t.type("café ")
+    assert [m for m, _ in used] == ["ydotool", "clipboard", "clipboard"]
