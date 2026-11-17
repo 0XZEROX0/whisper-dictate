@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import signal
 import threading
@@ -241,6 +242,9 @@ class Broadcaster(threading.Thread):
 
 
 def run_daemon(cfg: Config, *, no_hotkey: bool = False, no_overlay: bool = False) -> int:
+    # huggingface_hub's Xet downloader can stall forever at 0 bytes (seen with
+    # hf-xet 1.8), which leaves the model unloaded. Use plain HTTPS downloads.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     from .audio import Recorder
     from .engines import create_engine
     from .ipc import IPCServer

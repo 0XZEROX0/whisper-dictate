@@ -301,6 +301,10 @@ def run_in_thread(parent, fn, *args, on_done=None, on_failed=None, on_progress=N
     thread.finished.connect(thread.deleteLater)
     thread.finished.connect(lambda: [c.deleteLater() for c in callbacks])
     thread._worker = worker
+    running = getattr(parent, "_threads", None)
+    if running is not None:
+        running.add(thread)
+        thread.finished.connect(lambda: running.discard(thread))
     thread.start()
     return worker
 
@@ -313,6 +317,7 @@ class SettingsWindow(QWidget):
         self.setWindowTitle("Voice Dictation")
         self.setWindowIcon(theme.app_icon())
         self.resize(640, 820)
+        self._threads: set = set()
         self.cfg = load_config()
         self.has_cpp = shutil.which(self.cfg.whisper_cpp_binary) is not None or \
             shutil.which("whisper-cli") is not None
@@ -744,6 +749,12 @@ class SettingsWindow(QWidget):
                 self._save()
         if hasattr(self, "client"):
             self.client.stop()
+            self.client.wait(1500)
+        # Let background tasks (e.g. the update check) finish instead of
+        # destroying their threads mid-run, which aborts the app.
+        for thread in list(self._threads):
+            thread.quit()
+            thread.wait(10000)
         super().closeEvent(event)
 
 
