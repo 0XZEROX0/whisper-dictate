@@ -43,3 +43,28 @@ def test_notifier_modes():
     assert n.wants(error=False)
     n.mode = "off"
     assert not n.wants(error=True)
+
+
+def test_custom_models_are_listed_and_resolved(tmp_path, monkeypatch):
+    import json
+
+    from whisper_dictate import models
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    root = tmp_path / "whisper-dictate" / "models"
+    egy = root / "egyptian-turbo"
+    egy.mkdir(parents=True)
+    (egy / "model.bin").write_bytes(b"x")
+    (egy / "whisper-dictate.json").write_text(json.dumps({"languages": ["ar"], "size": "1.6 GB"}))
+    bare = root / "faster-whisper-other"
+    bare.mkdir()
+    (bare / "model.bin").write_bytes(b"x")
+    (root / "half.partial").mkdir()
+    (root / "ggml-small.bin").write_bytes(b"x")  # whisper.cpp file, ignored
+
+    ar = [m.name for m in models.models_for_language("ar")]
+    assert "egyptian-turbo" in ar and "faster-whisper-other" in ar
+    en = [m.name for m in models.models_for_language("en")]
+    assert "egyptian-turbo" not in en and "faster-whisper-other" in en
+    assert models.resolve_model("egyptian-turbo") == str(egy)
+    assert models.resolve_model("small") == "small"

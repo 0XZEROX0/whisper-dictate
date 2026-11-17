@@ -277,12 +277,12 @@ class LanguageProfiles(QWidget):
         name.setMinimumWidth(110)
         combo = combo_box([])
         for m in models_for_language(lang):
-            combo.addItem(f"{m.name}  ·  {m.size}", m.name)
+            combo.addItem(f"{m.name}  ·  {m.size}" if m.size else m.name, m.name)
             combo.setItemData(combo.count() - 1, m.note, Qt.ToolTipRole)
         model = model or self._default_model(lang)
         if lang != "en":
             model = model.removesuffix(".en")
-        set_combo(combo, model)
+        set_combo(combo, model, keep_unknown=True)
         combo.setMinimumWidth(220)
         combo.currentIndexChanged.connect(lambda *_: self.changed.emit())
         remove = QPushButton("Remove")
@@ -352,8 +352,11 @@ def combo_box(items: list[tuple[str, str]]) -> QComboBox:
     return box
 
 
-def set_combo(box: QComboBox, value) -> None:
+def set_combo(box: QComboBox, value, keep_unknown: bool = False) -> None:
     idx = box.findData(value)
+    if idx < 0 and keep_unknown and value:
+        box.addItem(str(value).rstrip("/").split("/")[-1], value)
+        idx = box.count() - 1
     box.setCurrentIndex(idx if idx >= 0 else 0)
 
 
@@ -701,10 +704,10 @@ class SettingsWindow(QWidget):
         self.model.blockSignals(True)
         self.model.clear()
         for m in models_for_language(lang):
-            self.model.addItem(f"{m.name}  ·  {m.size}", m.name)
+            self.model.addItem(f"{m.name}  ·  {m.size}" if m.size else m.name, m.name)
             tip = m.note + (" (English only)" if m.english_only else "")
             self.model.setItemData(self.model.count() - 1, tip, Qt.ToolTipRole)
-        set_combo(self.model, current)
+        set_combo(self.model, current, keep_unknown=True)
         self.model.blockSignals(False)
 
     def _model_changed(self) -> None:

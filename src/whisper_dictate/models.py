@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ class ModelInfo:
     name: str
     size: str
     note: str
+    languages: tuple = ()   # empty = any language
+    source: str = ""        # Hugging Face repo, for fine-tuned models
 
     @property
     def english_only(self) -> bool:
@@ -48,10 +51,95 @@ LANGUAGES = [
 ]
 
 
+# Community fine-tunes that run much better on a dialect. They're converted for
+# faster-whisper on your machine with `whisper-dictate add-model <name>`.
+FINE_TUNED = [
+    ModelInfo("egyptian-turbo", "1.6 GB",
+              "large-v3-turbo fine-tuned on Egyptian Arabic; keeps English words in English",
+              languages=("ar",), source="mohammedaly22/whisper-large-v3-turbo-egyptian-code-switching"),
+    ModelInfo("arabic-dialects-turbo", "1.6 GB",
+              "large-v3-turbo fine-tuned on Arabic dialects incl. Egyptian",
+              languages=("ar",), source="oddadmix/whisper-large-v3-turbo-arabic-dialectal"),
+]
+
+
+def custom_model_dir(name: str) -> Path:
+    return data_dir() / "models" / name
+
+
+def installed_custom_models() -> list[ModelInfo]:
+    root = data_dir() / "models"
+    found = []
+    if not root.is_dir():
+        return found
+    for d in sorted(root.iterdir()):
+        meta = d / "whisper-dictate.json"
+        if d.name.endswith(".partial") or not (d / "model.bin").exists():
+            continue
+        info = {}
+        if meta.exists():
+            try:
+                info = json.loads(meta.read_text())
+            except (OSError, ValueError):
+                pass
+        found.append(ModelInfo(d.name, info.get("size", ""), info.get("note", "custom model"),
+                               tuple(info.get("languages", ())), info.get("source", "")))
+    return found
+
+
+def resolve_model(name: str) -> str:
+    """faster-whisper takes a size name or a directory; custom models live in a directory."""
+    d = custom_model_dir(name)
+    return str(d) if (d / "model.bin").exists() else name
+
+
 def models_for_language(language: str) -> list[ModelInfo]:
+    custom = [m for m in installed_custom_models() if not m.languages or language in m.languages]
     if language == "en":
-        return list(MODELS)
-    return [m for m in MODELS if not m.english_only]
+        return list(MODELS) + custom
+    return [m for m in MODELS if not m.english_only] + custom
+
+
+def add_model(source: str, name: str | None = None, languages: tuple = (), note: str = "",
+              log: Callable[[str], None] = print) -> Path:
+    """Download a Hugging Face Whisper fine-tune and convert it for faster-whisper.
+
+    Needs `transformers` and `torch` next to ctranslate2 (only for converting).
+    """
+    known = {m.name: m for m in FINE_TUNED}
+    if source in known:
+        m = known[source]
+        name, source = name or m.name, m.source
+        languages, note = languages or m.languages, note or m.note
+    name = name or source.rstrip("/").split("/")[-1]
+    try:
+        from ctranslate2.converters import TransformersConverter
+        from huggingface_hub import list_repo_files
+    except ImportError as exc:
+        raise RuntimeError("converting needs: pip install transformers torch") from exc
+    files = set(list_repo_files(source))
+    copy = [f for f in ("tokenizer.json", "preprocessor_config.json") if f in files]
+    dest = custom_model_dir(name)
+    tmp = dest.with_name(dest.name + ".partial")
+    log(f"downloading and converting {source} (int8)…")
+    TransformersConverter(source, copy_files=copy, load_as_float16=True).convert(
+        str(tmp), quantization="int8", force=True)
+    if not (tmp / "tokenizer.json").exists():
+        # Some fine-tunes only ship the slow tokenizer files; reuse the base model's.
+        from huggingface_hub import hf_hub_download
+        import shutil
+        shutil.copy(hf_hub_download("openai/whisper-large-v3-turbo", "tokenizer.json"), tmp / "tokenizer.json")
+    size = sum(f.stat().st_size for f in tmp.rglob("*") if f.is_file())
+    (tmp / "whisper-dictate.json").write_text(json.dumps({
+        "source": source, "languages": list(languages), "note": note or f"fine-tune from {source}",
+        "size": f"{size / 1e9:.1f} GB" if size > 1e9 else f"{size // 1_000_000} MB",
+    }, indent=2))
+    if dest.exists():
+        import shutil
+        shutil.rmtree(dest)
+    tmp.rename(dest)
+    log(f"installed as '{name}' in {dest}")
+    return dest
 
 
 def multilingual_equivalent(model: str) -> str:

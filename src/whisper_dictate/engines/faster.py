@@ -7,6 +7,7 @@ import logging
 import numpy as np
 
 from ..config import Config
+from ..models import resolve_model
 from .base import Engine
 
 log = logging.getLogger(__name__)
@@ -45,14 +46,14 @@ class FasterWhisperEngine(Engine):
         log.info("loading %s on %s (%s)", self.model_name, self.device, self.compute_type)
         try:
             self._model = WhisperModel(
-                self.model_name, device=self.device, compute_type=self.compute_type
+                resolve_model(self.model_name), device=self.device, compute_type=self.compute_type
             )
         except Exception:
             if self.device != "cuda":
                 raise
             log.exception("CUDA load failed, falling back to CPU")
             self.device, self.compute_type = "cpu", "int8"
-            self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
+            self._model = WhisperModel(resolve_model(self.model_name), device="cpu", compute_type="int8")
 
     def detect_language(self, audio: np.ndarray, allowed: list[str]) -> tuple[str, float]:
         """Most likely language among `allowed`, with its probability."""

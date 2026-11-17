@@ -156,6 +156,15 @@ detect = ["en", "ar"]
 models = { "en" = "small.en", "ar" = "large-v3-turbo" }
 ```
 
+**Dialects and fine-tuned models:** community fine-tunes often do much
+better on a dialect. `whisper-dictate add-model egyptian-turbo` converts a
+large-v3-turbo fine-tuned on Egyptian Arabic (it also keeps English words in
+English); `arabic-dialects-turbo` covers several Arabic dialects, and any
+Hugging Face Whisper repo id works too (converting needs `pip install
+transformers torch`). A ready CTranslate2 folder copied into
+`~/.local/share/whisper-dictate/models/<name>/` shows up as well. Then pick
+it for that language in Settings.
+
 ## Updates
 
 Settings checks for a new version each time it opens (you can turn that off),

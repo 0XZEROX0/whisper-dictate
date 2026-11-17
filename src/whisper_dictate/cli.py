@@ -154,6 +154,11 @@ def main(argv: list[str] | None = None) -> int:
     dm = sub.add_parser("download-model", help="download a whisper.cpp model")
     dm.add_argument("model", nargs="?", help="e.g. small.en, base.en, large-v3-turbo")
 
+    am = sub.add_parser("add-model", help="convert a fine-tuned Whisper model from Hugging Face")
+    am.add_argument("source", help="egyptian-turbo, arabic-dialects-turbo, or a Hugging Face repo id")
+    am.add_argument("--name", help="name to show in Settings")
+    am.add_argument("--language", action="append", default=[], help="language code it's for, e.g. ar")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -186,6 +191,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "download-model":
         return download_model(args.model)
+    if args.cmd == "add-model":
+        from .models import add_model
+        try:
+            add_model(args.source, name=args.name, languages=tuple(args.language))
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print("Pick it in Settings, then Save.")
+        return 0
     return 2
 
 
