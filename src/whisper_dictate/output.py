@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,9 +95,10 @@ def _run_detached_output(cmd: list[str], *, input: str, timeout: float = 5) -> N
 
 
 class Typer:
-    def __init__(self, method: str, session: SessionInfo | None = None):
+    def __init__(self, method: str, session: SessionInfo | None = None, paste: bool = False):
         self.method = method
         self.session = session or SessionInfo.from_env()
+        self.paste = paste  # insert text in one go through the clipboard
 
     def type(self, text: str) -> None:
         if not text:
@@ -105,6 +107,8 @@ class Typer:
         # ydotool presses physical keys for a US layout, so it can't type
         # letters like é, ß or Arabic script. Paste those instead.
         if method == "ydotool" and not text.isascii():
+            method = "clipboard"
+        if self.paste and method != "clipboard" and _can_copy(self.session):
             method = "clipboard"
         getattr(self, "_type_" + method)(text)
 
@@ -130,9 +134,45 @@ class Typer:
         _run(["xdotool", "type", "--clearmodifiers", "--delay", "3", "--", text])
 
     def _type_clipboard(self, text: str) -> None:
+        previous = read_clipboard_text(self.session)
         copy_to_clipboard(text, self.session)
         time.sleep(0.05)
         send_paste(self.session)
+        if previous is not None and previous != text:
+            # Put back what you had copied, once the app has read the paste.
+            def restore() -> None:
+                time.sleep(0.4)
+                try:
+                    copy_to_clipboard(previous, self.session)
+                except Exception:
+                    pass
+
+            threading.Thread(target=restore, daemon=True).start()
+
+
+def _can_copy(session: SessionInfo) -> bool:
+    if session.session_type == "wayland":
+        return bool(shutil.which("wl-copy"))
+    return bool(shutil.which("xclip") or shutil.which("xsel"))
+
+
+def read_clipboard_text(session: SessionInfo) -> str | None:
+    """The clipboard's text, or None if it's empty, not text, or unreadable."""
+    if session.session_type == "wayland" and shutil.which("wl-paste"):
+        cmds = (["wl-paste", "--list-types"], ["wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"])
+    elif shutil.which("xclip"):
+        cmds = (["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
+                ["xclip", "-selection", "clipboard", "-o"])
+    else:
+        return None
+    try:
+        types = subprocess.run(cmds[0], capture_output=True, text=True, timeout=1).stdout
+        if "text/plain" not in types and "UTF8_STRING" not in types:
+            return None  # an image or file: leave it alone rather than mangle it
+        out = subprocess.run(cmds[1], capture_output=True, timeout=1)
+        return out.stdout.decode() if out.returncode == 0 and out.stdout else None
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
 
 
 def copy_to_clipboard(text: str, session: SessionInfo) -> None:

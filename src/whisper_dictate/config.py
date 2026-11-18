@@ -55,8 +55,11 @@ typer = {typer}
 trailing_space = {trailing_space}
 # Press Enter after typing, e.g. to send a chat message right away.
 press_enter = {press_enter}
-# Live transcription: "off", "preview" (words appear in the floating pill as
-# you speak, typed when you stop) or "type" (each phrase is typed when you pause).
+# Insert the text in one go (pasted; your clipboard is put back afterwards)
+# instead of typing it key by key.
+paste = {paste}
+# Live transcription: "off", "type" (words are inserted into the window as
+# you speak) or "preview" (words show in the floating bar, inserted when you stop).
 live = {live}
 
 [feedback]
@@ -118,6 +121,7 @@ class Config:
     trailing_space: bool = True
     press_enter: bool = False
     live: str = "off"
+    paste: bool = True
     notifications: str = "errors"
     overlay: bool = True
     overlay_position: str = "bottom"
@@ -167,6 +171,7 @@ _SECTION_MAP = {
     ("output", "trailing_space"): "trailing_space",
     ("output", "press_enter"): "press_enter",
     ("output", "live"): "live",
+    ("output", "paste"): "paste",
     ("feedback", "notifications"): "notifications",
     ("feedback", "overlay"): "overlay",
     ("feedback", "overlay_position"): "overlay_position",

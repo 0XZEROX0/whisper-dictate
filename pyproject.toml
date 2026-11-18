@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whisper-dictate"
-version = "0.7.1"
+version = "0.8.0"
 description = "System-wide push-to-talk voice typing for Linux, powered by local Whisper"
 readme = "README.md"
 requires-python = ">=3.11"

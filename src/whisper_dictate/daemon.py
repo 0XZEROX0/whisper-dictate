@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 
 FRAME = 0.05  # seconds per loudness frame for pause detection
+DETECT_SECONDS = 2.5  # speech needed before live mode decides the language
 
 
 def pause_at(audio: np.ndarray, sr: int, start: int, min_speech: float = 0.8,
@@ -51,12 +52,26 @@ def pause_at(audio: np.ndarray, sr: int, start: int, min_speech: float = 0.8,
     return None
 
 
+def _agreed(prev: list[str], words: list[str]) -> list[str]:
+    """Words two passes in a row agree on, minus the last one (often cut mid-word)."""
+    n = 0
+    for a, b in zip(prev, words):
+        if a != b:
+            break
+        n += 1
+    return words[:min(n, len(words) - 1)]
+
+
 class LiveSession(threading.Thread):
     """Runs while recording with live transcription on.
 
-    preview: re-transcribes what you've said every moment with a fast model and
-             publishes it for the floating pill; the final text is typed on stop.
-    type:    also types each phrase as soon as you pause, with the real model.
+    type:    types words into the focused window as you speak. The phrase so
+             far is re-transcribed again and again with your chosen model;
+             words that come out the same twice in a row are typed (they
+             rarely change after that). At each pause the phrase is finished
+             and the next one starts fresh.
+    preview: shows the same live text in the floating pill instead; the final
+             text is typed when you stop.
     """
 
     def __init__(self, dictation: "Dictation"):
@@ -65,8 +80,10 @@ class LiveSession(threading.Thread):
         self.mode = dictation.cfg.live
         self.sr = dictation.cfg.sample_rate
         self.done = threading.Event()
-        self.committed = 0          # samples already typed (type mode)
-        self.committed_text = ""    # what was typed so far
+        self.committed = 0          # sample where the current phrase starts
+        self.committed_text = ""    # finished phrases
+        self.phrase_typed: list[str] = []  # words of the current phrase already typed
+        self.prev: list[str] = []   # last pass over the current phrase
         self.preview = ""
         self.language: str | None = None
         self.typed_any = False
@@ -76,44 +93,72 @@ class LiveSession(threading.Thread):
 
     def run(self) -> None:
         try:
-            while not self.done.wait(0.25):
+            while not self.done.wait(0.15):
                 audio = self.d.recorder.snapshot()
-                if self.mode == "type" and not self.d.keys_held():
+                if not self.d.keys_held():
                     cut = pause_at(audio, self.sr, self.committed)
                     if cut is not None:
-                        self._commit(audio[self.committed:cut])
+                        self._finish_phrase(audio[self.committed:cut])
                         self.committed = cut
                         continue
-                self._preview(audio[self.committed:])
+                self._pass(audio[self.committed:])
         except Exception:
             log.exception("live transcription failed")
 
-    def _language(self, audio: np.ndarray) -> str | None:
-        if self.language is None and len(audio) > 1.5 * self.sr and hasattr(self.d.engine, "detect"):
+    def _transcribe(self, audio: np.ndarray, force: bool = False) -> str | None:
+        """Text of `audio`. With several languages, the language is decided once
+        per dictation, from at least DETECT_SECONDS of speech (a second or two is
+        too little: Egyptian Arabic was taken for Russian); until then this
+        returns None unless `force`."""
+        engine = self.d.engine
+        if hasattr(engine, "detect"):
+            if self.language is None:
+                spoken = self.d.recorder.snapshot()[: int(15 * self.sr)]
+                if len(spoken) < DETECT_SECONDS * self.sr and not force:
+                    return None
+                with self.d.engine_lock:
+                    self.language = engine.detect(spoken if len(spoken) >= len(audio) else audio)
             with self.d.engine_lock:
-                self.language = self.d.engine.detect(audio, allow_strong=False)
-        return self.language
-
-    def _preview(self, audio: np.ndarray) -> None:
-        if len(audio) < 0.5 * self.sr:
-            return
-        audio = audio[-int(25 * self.sr):]  # keep it quick on long dictations
-        lang = self._language(audio)
+                return engine.transcribe(audio, self.sr, language=self.language).strip()
         with self.d.engine_lock:
-            text, lang = self.d.engine.preview(audio, self.sr, language=lang)
-        if not self.done.is_set():
-            self.preview = text.strip()
+            return engine.transcribe(audio, self.sr).strip()
 
-    def _commit(self, audio: np.ndarray) -> None:
-        with self.d.engine_lock:
-            text = self.d.engine.transcribe(audio, self.sr).strip()
-        self.preview = ""
-        if not text:
+    def _pass(self, audio: np.ndarray) -> None:
+        if len(audio) < 0.8 * self.sr:
             return
-        log.info("live: typing phrase %r", text)
-        self.d.typer.type(text + " ")
-        self.committed_text = (self.committed_text + " " + text).strip()
+        audio = audio[-int(28 * self.sr):]
+        text = self._transcribe(audio)
+        if text is None or self.done.is_set():
+            return
+        words = text.split()
+        self.preview = " ".join(words)
+        if self.mode == "type" and not self.d.keys_held():
+            agreed = _agreed(self.prev, words)
+            new = agreed[len(self.phrase_typed):]
+            if len(agreed) > len(self.phrase_typed) and agreed[:len(self.phrase_typed)] == self.phrase_typed:
+                self._type(new)
+        self.prev = words
+
+    def _type(self, words: list[str]) -> None:
+        if not words:
+            return
+        self.d.typer.type(" ".join(words) + " ")
+        self.phrase_typed += words
         self.typed_any = True
+
+    def remaining(self, text: str) -> str:
+        """The part of a phrase's final text that isn't typed yet."""
+        return " ".join(text.split()[len(self.phrase_typed):])
+
+    def _finish_phrase(self, audio: np.ndarray) -> None:
+        text = self._transcribe(audio, force=True) or ""
+        if self.mode == "type" and not self.done.is_set():
+            rest = self.remaining(text)
+            if rest:
+                log.info("live: phrase %r", text)
+                self._type(rest.split())
+        self.committed_text = (self.committed_text + " " + text).strip()
+        self.phrase_typed, self.prev, self.preview = [], [], ""
 
     def finish(self) -> None:
         self.done.set()
@@ -250,12 +295,18 @@ class Dictation:
     def _process(self, audio: np.ndarray, live: LiveSession | None = None) -> None:
         t0 = time.monotonic()
         typed_before = live is not None and live.typed_any
+        language = live.language if live is not None else None
         try:
             if len(audio) < self.cfg.min_seconds * self.cfg.sample_rate:
                 text = ""
             else:
                 with self.engine_lock:
-                    text = self.engine.transcribe(audio, self.cfg.sample_rate).strip()
+                    if language and hasattr(self.engine, "detect"):
+                        text = self.engine.transcribe(audio, self.cfg.sample_rate, language=language).strip()
+                    else:
+                        text = self.engine.transcribe(audio, self.cfg.sample_rate).strip()
+            if live is not None and live.mode == "type":
+                text = live.remaining(text)  # words of this phrase already typed live
         except Exception as exc:
             log.exception("transcription failed")
             self.notifier.show("Transcription failed", str(exc), urgency="critical", timeout_ms=5000)
@@ -395,7 +446,7 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False, no_overlay: bool = False
     log.info("session=%s desktop=%s typer=%s", session.session_type, session.desktop, typer_name)
 
     notifier = Notifier(cfg.notifications)
-    dictation = Dictation(cfg, Recorder(cfg.sample_rate), engine, Typer(typer_name, session), notifier)
+    dictation = Dictation(cfg, Recorder(cfg.sample_rate), engine, Typer(typer_name, session, paste=cfg.paste), notifier)
 
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -458,6 +509,10 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False, no_overlay: bool = False
             if overlay:
                 overlay.check()
     finally:
+        # Don't cut off text being typed (e.g. Settings restarting the service).
+        deadline = time.monotonic() + 4.0
+        while dictation._busy and time.monotonic() < deadline:
+            time.sleep(0.05)
         if listener:
             listener.stop()
         if overlay:

@@ -26,7 +26,7 @@ from .client import StateClient
 
 # Fields the window edits. Saving only writes the ones you changed, on top of
 # whatever is on disk, so edits made elsewhere meanwhile aren't overwritten.
-FIELDS = ("hotkey", "mode", "live", "language", "model", "detect_languages", "language_models", "engine", "device", "typer", "trailing_space", "press_enter",
+FIELDS = ("hotkey", "mode", "live", "paste", "language", "model", "detect_languages", "language_models", "engine", "device", "typer", "trailing_space", "press_enter",
           "overlay", "overlay_position", "notifications", "check_updates")
 
 STATUS = {
@@ -733,8 +733,12 @@ class SettingsWindow(QWidget):
         self.enter.toggled.connect(self._mark)
         card.add_row("Press Enter after typing", "Sends the message right away in chats and search boxes.",
                      self.enter)
-        self.live = combo_box([("off", "Off"), ("preview", "Show words as I speak"),
-                               ("type", "Type each phrase when I pause")])
+        self.paste = theme.ToggleSwitch()
+        self.paste.toggled.connect(self._mark)
+        card.add_row("Insert all at once", "Pastes the whole text instantly instead of typing it letter "
+                     "by letter. Your clipboard is put back afterwards.", self.paste)
+        self.live = combo_box([("off", "Off"), ("type", "Type into the window as I speak"),
+                               ("preview", "Show words in the floating bar")])
         self.live.currentIndexChanged.connect(self._live_changed)
         self.live_row = card.add_row("Live transcription", " ", self.live, wide=True)
         col.addWidget(card)
@@ -823,6 +827,7 @@ class SettingsWindow(QWidget):
             "trailing_space": self.trailing.isChecked(),
             "press_enter": self.enter.isChecked(),
             "live": self.live.currentData(),
+            "paste": self.paste.isChecked(),
             "overlay": self.overlay.isChecked(),
             "overlay_position": self.position.currentData(),
             "notifications": self.notifications.currentData(),
@@ -842,6 +847,7 @@ class SettingsWindow(QWidget):
         self.trailing.setChecked(cfg.trailing_space)
         self.enter.setChecked(cfg.press_enter)
         set_combo(self.live, cfg.live)
+        self.paste.setChecked(cfg.paste)
         self.overlay.setChecked(cfg.overlay)
         set_combo(self.position, cfg.overlay_position)
         set_combo(self.notifications, cfg.notifications)
@@ -916,9 +922,10 @@ class SettingsWindow(QWidget):
 
     def _live_changed(self, *_args) -> None:
         self.live_row.desc.setText({
-            "off": "Text is typed once you stop.",
-            "preview": "Words appear in the floating pill while you talk; the final text is typed when you stop.",
-            "type": "Each phrase is typed as soon as you pause, so long dictations land as you go.",
+            "off": "Text is inserted once you stop.",
+            "type": "Words land in the text box while you talk, a few at a time (each phrase is "
+                    "finished when you pause). Big models like Egyptian Arabic lag a few seconds on a CPU.",
+            "preview": "Words appear in the floating bar while you talk; the text is inserted when you stop.",
         }.get(self.live.currentData(), ""))
         self._mark()
 

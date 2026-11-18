@@ -299,7 +299,7 @@ def test_live_preview_publishes_text_and_types_once():
     deadline = time.time() + 3
     while not d.live_text() and time.time() < deadline:
         time.sleep(0.02)
-    assert d.live_text() == "draft2.3"
+    assert d.live_text() == "phrase2.3"  # the real model drafts it
     assert typer.typed == []
     d.stop()
     assert typer.done.wait(3)
@@ -316,3 +316,36 @@ def test_broadcast_line_carries_live_text():
     line = b._line().decode()
     state, level, text = line.rstrip("\n").split(" ", 2)
     assert (state, json.loads(text)) == ("recording", "مرحبا hello")
+
+
+def test_live_type_streams_agreed_words_without_duplicates():
+    from whisper_dictate.daemon import _agreed
+
+    assert _agreed(["a", "b", "c"], ["a", "b", "c", "d"]) == ["a", "b", "c"]
+    assert _agreed(["a", "x"], ["a", "b", "c"]) == ["a"]
+    assert _agreed([], ["a"]) == []
+
+    words = "one two three four five six".split()
+    state = {"n": 2}
+
+    class Growing:
+        def transcribe(self, audio, sr):
+            return " ".join(words[: state["n"]])
+
+    class Rec(LiveRecorder):
+        pass
+
+    audio = _speech((0.2, False), (3.0, True))  # no pause: only streaming types
+    typer = FakeTyper()
+    d = Dictation(Config(live="type"), Rec(audio), Growing(), typer, FakeNotifier())
+    d.ready.set()
+    d.start()
+    for n in range(2, 7):
+        state["n"] = n
+        time.sleep(0.4)
+    d.stop()
+    deadline = time.time() + 3
+    while d._busy and time.time() < deadline:
+        time.sleep(0.02)
+    assert "".join(typer.typed).split() == words  # every word once, in order
+    assert len(typer.typed) > 1  # some landed while still talking

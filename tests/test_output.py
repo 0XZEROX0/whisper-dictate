@@ -64,3 +64,23 @@ def test_clipboard_copy_does_not_wait_for_forked_server(tmp_path, monkeypatch):
     t0 = time.monotonic()
     copy_to_clipboard("مرحبا", s("wayland", "gnome"))
     assert time.monotonic() - t0 < 3
+
+
+def test_paste_mode_inserts_everything_through_the_clipboard(monkeypatch):
+    from whisper_dictate import output
+
+    calls = []
+    monkeypatch.setattr(output.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(output, "read_clipboard_text", lambda session: "what I had copied")
+    monkeypatch.setattr(output, "copy_to_clipboard", lambda text, session: calls.append(("copy", text)))
+    monkeypatch.setattr(output, "send_paste", lambda session: calls.append(("paste",)))
+    monkeypatch.setattr(output.time, "sleep", lambda s: None)
+    session = output.SessionInfo(session_type="wayland", desktop="GNOME")
+    t = output.Typer("ydotool", session, paste=True)
+    t.type("hello world ")
+    import threading
+    for th in threading.enumerate():
+        if th is not threading.current_thread() and th.daemon:
+            th.join(timeout=1)
+    assert calls[:2] == [("copy", "hello world "), ("paste",)]
+    assert ("copy", "what I had copied") in calls  # clipboard restored
