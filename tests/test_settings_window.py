@@ -184,12 +184,13 @@ def test_overlay_grows_for_live_text(app):
 
     o = overlay.Overlay()
     o.set_state("recording", 0.4, "this is a fairly long sentence that is being spoken right now")
-    assert o.width() > overlay.WIDTH
+    assert o.target_w > overlay.WIDTH
+    assert o.pill_pixmap().width() == int(o.target_w)
     o.grab()
     o.set_state("recording", 0.4, "ده أول تجربة للعربي المصري")
-    o.grab()
+    o.pill_pixmap()
     o.set_state("transcribing", 0.0)
-    assert o.width() == overlay.WIDTH and o.text == ""
+    assert o.target_w == overlay.WIDTH and o.text == ""
     assert overlay._is_rtl("ده hello") and not overlay._is_rtl("hello ده")
 
 
@@ -230,3 +231,39 @@ def test_autosave_fires_and_light_changes_skip_the_restart(app, cfg_home, monkey
     set_combo(win.language, "ar")  # needs a restart (model reload)
     win._save()
     assert restarts == [1]
+
+
+def test_pill_slides_in_with_bounce_and_out_past_the_edge(app):
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    from whisper_dictate.gui import overlay
+
+    def run(ms):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    for position in ("top", "bottom"):
+        o = overlay.Overlay(position)
+        ys = []
+        o.slide.valueChanged.connect(lambda v: ys.append(float(v)))
+        o.set_state("recording", 0.5)
+        assert o.isVisible() and o.pill_y == o._hidden_y()
+        run(overlay.ENTER_MS + 150)
+        rest = o._rest_y()
+        assert abs(o.pill_y - rest) < 0.5
+        toward_screen = (lambda y: y > rest) if position == "top" else (lambda y: y < rest)
+        assert any(toward_screen(y) for y in ys)  # overshoots a little: the bounce
+        ys.clear()
+        o.set_state("idle", 0.0)
+        assert o.leaving
+        run(overlay.EXIT_MS + 150)
+        assert any(toward_screen(y) for y in ys)  # dips before leaving
+        assert not o.isVisible() and not o.leaving
+        # Coming back mid-exit slides straight back in.
+        o.set_state("recording", 0.5)
+        run(60)
+        o.set_state("idle", 0.0)
+        run(60)
+        o.set_state("recording", 0.5)
+        assert not o.leaving

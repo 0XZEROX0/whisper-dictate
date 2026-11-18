@@ -57,6 +57,13 @@ never takes focus, so your text still lands where your cursor is.
 
 Listening, transcribing, done.
 
+<p align="center">
+  <img src="docs/slide.gif" width="400" alt="The bar sliding in from the top edge with a bounce, then dipping and sliding back out">
+</p>
+
+It glides in from the screen edge it sits on (top or bottom) with a little
+bounce, and when you're done it dips and slides back out.
+
 ## Install
 
 Tested on **CachyOS / Arch Linux**. Other distributions work too; install

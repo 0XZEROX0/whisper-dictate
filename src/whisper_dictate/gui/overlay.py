@@ -11,7 +11,8 @@ import subprocess
 import sys
 import time
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer, QVariantAnimation
+from PySide6.QtGui import QPixmap
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
@@ -40,6 +41,8 @@ COLORS = {
 }
 WIDTH, HEIGHT, MARGIN = 236, 52, 56
 MAX_WIDTH = 760  # the pill grows to show live text up to this width
+DIP = 22         # room for the little dip toward the screen before it slides away
+ENTER_MS, EXIT_MS = 560, 480
 BARS = 9
 
 
@@ -79,19 +82,23 @@ class Overlay(QWidget):
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setFixedSize(WIDTH, HEIGHT)
+        # The window is a fixed, invisible strip along the screen edge; the pill
+        # slides inside it (smoother than moving a window, esp. on XWayland).
+        self.setFixedSize(MAX_WIDTH + 8, MARGIN + HEIGHT + DIP)
         self.setWindowTitle("whisper-dictate indicator")
+        self.pill_w = float(WIDTH)
+        self.target_w = float(WIDTH)
+        self.pill_y = self._hidden_y()
+        self.slide = QVariantAnimation(self)
+        self.slide.valueChanged.connect(self._slid)
+        self.slide.finished.connect(self._slide_done)
+        self.leaving = False
 
         self.state = "idle"
         self.text = ""
         self.level = 0.0
         self.smooth = 0.0
         self.t0 = time.monotonic()
-
-        self.fade = QPropertyAnimation(self, b"windowOpacity", self)
-        self.fade.setDuration(160)
-        self.fade.setEasingCurve(QEasingCurve.OutCubic)
-        self.fade.finished.connect(self._fade_done)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -110,8 +117,19 @@ class Overlay(QWidget):
             or QGuiApplication.primaryScreen()
         geo = screen.availableGeometry()
         x = geo.x() + (geo.width() - self.width()) // 2
-        y = geo.y() + MARGIN if self.position == "top" else geo.y() + geo.height() - HEIGHT - MARGIN
+        y = geo.y() if self.position == "top" else geo.y() + geo.height() - self.height()
         self.move(x, y)
+
+    def _rest_y(self) -> float:
+        return float(MARGIN if self.position == "top" else DIP)
+
+    def _hidden_y(self) -> float:
+        # Just past the screen edge the window touches.
+        return float(-HEIGHT - 6 if self.position == "top" else self.height() + 6)
+
+    def _dip_y(self) -> float:
+        # A little move toward the middle of the screen, like a bounce before leaving.
+        return self._rest_y() + (DIP if self.position == "top" else -DIP)
 
     # -- state ----------------------------------------------------------
     def _poll_download(self) -> None:
@@ -136,10 +154,7 @@ class Overlay(QWidget):
             font.setPixelSize(15)
             font.setWeight(QFont.DemiBold)
             width = min(max(WIDTH, QFontMetrics(font).horizontalAdvance(text) + 112), MAX_WIDTH)
-        if width != self.width():
-            self.setFixedSize(width, HEIGHT)
-            if self.isVisible():
-                self._place()
+        self.target_w = float(width)
         self.update()
 
     def _shown(self) -> bool:
@@ -158,25 +173,49 @@ class Overlay(QWidget):
 
     def _update_visibility(self) -> None:
         visible = self._shown()
-        if visible and not self.isVisible():
-            self._place()
-            self.setWindowOpacity(0.0)
-            self.show()
-            self.raise_()
-            self._animate_opacity(1.0)
-        elif visible and self.fade.endValue() == 0.0 and self.fade.state() == QPropertyAnimation.Running:
-            self._animate_opacity(1.0)
-        elif not visible and self.isVisible() and self.fade.endValue() != 0.0:
-            self._animate_opacity(0.0)
+        if visible and (not self.isVisible() or self.leaving):
+            if not self.isVisible():
+                self.pill_y = self._hidden_y()
+                self._place()
+                self.show()
+                self.raise_()
+            self._slide_in()
+        elif not visible and self.isVisible() and not self.leaving:
+            self._slide_out()
 
-    def _animate_opacity(self, target: float) -> None:
-        self.fade.stop()
-        self.fade.setStartValue(self.windowOpacity())
-        self.fade.setEndValue(target)
-        self.fade.start()
+    def _slide_in(self) -> None:
+        """Glide in from the edge and settle with a small bounce."""
+        self.leaving = False
+        self.slide.stop()
+        self.slide.setDuration(ENTER_MS)
+        self.slide.setKeyValues([])
+        self.slide.setStartValue(self.pill_y)
+        self.slide.setEndValue(self._rest_y())
+        curve = QEasingCurve(QEasingCurve.OutBack)
+        curve.setOvershoot(1.6)
+        self.slide.setEasingCurve(curve)
+        self.slide.start()
 
-    def _fade_done(self) -> None:
-        if self.fade.endValue() == 0.0:
+    def _slide_out(self) -> None:
+        """Dip toward the screen a little, then ease back out past the edge."""
+        self.leaving = True
+        self.slide.stop()
+        self.slide.setDuration(EXIT_MS)
+        self.slide.setEasingCurve(QEasingCurve.Linear)
+        self.slide.setKeyValues([])
+        self.slide.setKeyValueAt(0.0, self.pill_y)
+        self.slide.setKeyValueAt(0.3, self._dip_y())
+        self.slide.setKeyValueAt(1.0, self._hidden_y())
+        self.slide.setEasingCurve(QEasingCurve.InOutSine)
+        self.slide.start()
+
+    def _slid(self, value) -> None:
+        self.pill_y = float(value)
+        self.update()
+
+    def _slide_done(self) -> None:
+        if self.leaving:
+            self.leaving = False
             self.hide()
 
     def _tick(self) -> None:
@@ -185,13 +224,28 @@ class Overlay(QWidget):
         # Fast attack, slow release, so the bars feel alive but not jittery.
         k = 0.5 if self.level > self.smooth else 0.12
         self.smooth += (self.level - self.smooth) * k
+        self.pill_w += (self.target_w - self.pill_w) * 0.18  # widen smoothly for live text
         self.update()
 
     # -- drawing --------------------------------------------------------
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        W = self.width()
+        p.translate((self.width() - self.pill_w) / 2, self.pill_y)
+        self._paint_pill(p, self.pill_w)
+
+    def pill_pixmap(self) -> QPixmap:
+        """The pill on its own (for screenshots and tests)."""
+        self.pill_w = self.target_w
+        pm = QPixmap(int(self.pill_w), HEIGHT)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        self._paint_pill(p, self.pill_w)
+        p.end()
+        return pm
+
+    def _paint_pill(self, p: QPainter, W: float) -> None:
         rect = QRectF(1, 1, W - 2, HEIGHT - 2)
         path = QPainterPath()
         path.addRoundedRect(rect, HEIGHT / 2 - 1, HEIGHT / 2 - 1)
