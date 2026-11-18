@@ -213,3 +213,106 @@ def test_no_enter_by_default():
     assert typer.done.wait(2)
     time.sleep(0.15)
     assert typer.enters == 0
+
+
+def _speech(*parts, sr=16000):
+    """Build audio from (seconds, loud?) parts."""
+    rng = np.random.default_rng(0)
+    out = []
+    for seconds, loud in parts:
+        n = int(sr * seconds)
+        out.append((rng.standard_normal(n) * (0.2 if loud else 0.002)).astype(np.float32))
+    return np.concatenate(out)
+
+
+def test_pause_detection():
+    from whisper_dictate.daemon import pause_at
+
+    audio = _speech((0.3, False), (1.2, True), (0.8, False), (1.0, True))
+    cut = pause_at(audio, 16000, 0)
+    assert cut is not None and 1.5 * 16000 < cut < 2.3 * 16000
+    # Still talking, no pause yet.
+    assert pause_at(_speech((0.2, False), (2.0, True)), 16000, 0) is None
+    # After the first phrase is committed, the second has no pause after it.
+    assert pause_at(audio, 16000, cut) is None
+
+
+class LiveRecorder(FakeRecorder):
+    def __init__(self, audio):
+        super().__init__()
+        self.audio = audio
+        self.level = 0.5
+
+    def snapshot(self):
+        return self.audio
+
+    def stop(self):
+        self.recording = False
+        return self.audio
+
+
+class PhraseEngine:
+    """'Transcribes' by reporting how long the audio was."""
+
+    def __init__(self):
+        self.previews = 0
+
+    def transcribe(self, audio, sr):
+        return f"phrase{round(len(audio) / sr, 1)}"
+
+    def preview(self, audio, sr, language=None):
+        self.previews += 1
+        return f"draft{round(len(audio) / sr, 1)}", ""
+
+
+def test_live_type_mode_types_each_phrase_then_the_rest():
+    audio = _speech((0.3, False), (1.2, True), (0.8, False), (1.0, True))
+    typer = FakeTyper()
+    d = Dictation(Config(live="type", press_enter=True), LiveRecorder(audio), PhraseEngine(), typer,
+                  FakeNotifier())
+    d.ready.set()
+    d.start()
+    deadline = time.time() + 3
+    while len(typer.typed) < 1 and time.time() < deadline:
+        time.sleep(0.02)
+    assert len(typer.typed) == 1 and typer.typed[0].startswith("phrase")  # typed during recording
+    d.stop()
+    deadline = time.time() + 3
+    while len(typer.typed) < 2 and time.time() < deadline:
+        time.sleep(0.02)
+    first, rest = typer.typed
+    total = float(first.split("phrase")[1]) + float(rest.split("phrase")[1])
+    assert abs(total - len(audio) / 16000) < 0.15  # nothing lost, nothing typed twice
+    deadline = time.time() + 2
+    while typer.enters < 1 and time.time() < deadline:
+        time.sleep(0.02)
+    assert typer.enters == 1  # Enter once, at the very end
+
+
+def test_live_preview_publishes_text_and_types_once():
+    audio = _speech((0.3, False), (2.0, True))
+    typer = FakeTyper()
+    engine = PhraseEngine()
+    d = Dictation(Config(live="preview"), LiveRecorder(audio), engine, typer, FakeNotifier())
+    d.ready.set()
+    d.start()
+    deadline = time.time() + 3
+    while not d.live_text() and time.time() < deadline:
+        time.sleep(0.02)
+    assert d.live_text() == "draft2.3"
+    assert typer.typed == []
+    d.stop()
+    assert typer.done.wait(3)
+    assert typer.typed == ["phrase2.3 "]
+    assert d.live_text() == ""
+
+
+def test_broadcast_line_carries_live_text():
+    import json
+
+    from whisper_dictate.daemon import Broadcaster
+
+    b = Broadcaster(lambda: ("recording", 0.5), text=lambda: "مرحبا hello")
+    line = b._line().decode()
+    state, level, text = line.rstrip("\n").split(" ", 2)
+    assert (state, json.loads(text)) == ("recording", "مرحبا hello")

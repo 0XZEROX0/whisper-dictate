@@ -55,6 +55,9 @@ typer = {typer}
 trailing_space = {trailing_space}
 # Press Enter after typing, e.g. to send a chat message right away.
 press_enter = {press_enter}
+# Live transcription: "off", "preview" (words appear in the floating pill as
+# you speak, typed when you stop) or "type" (each phrase is typed when you pause).
+live = {live}
 
 [feedback]
 # Floating animation while listening / transcribing.
@@ -74,8 +77,9 @@ check_updates = {check_updates}
 # its own model, e.g. a fast one for English and a big one for Arabic.
 detect = {detect_languages}
 models = {language_models}
-# Recognises which language you speak only if all chosen models are English-only;
-# otherwise the strongest multilingual model you picked does it.
+# Quickly recognises which language you speak (and shows live text for
+# languages whose own model is too big for that). When it's unsure, the
+# strongest multilingual model you picked decides.
 detector_model = {detector_model}
 """
 
@@ -113,6 +117,7 @@ class Config:
     typer: str = "auto"
     trailing_space: bool = True
     press_enter: bool = False
+    live: str = "off"
     notifications: str = "errors"
     overlay: bool = True
     overlay_position: str = "bottom"
@@ -120,7 +125,7 @@ class Config:
     # With language = "auto": only detect these languages, each with its own model.
     detect_languages: list = field(default_factory=list)
     language_models: dict = field(default_factory=dict)
-    detector_model: str = "base"
+    detector_model: str = "small"
     sample_rate: int = 16000
     min_seconds: float = 0.3
     extra: dict = field(default_factory=dict)
@@ -133,6 +138,8 @@ class Config:
         return model
 
     def validate(self) -> None:
+        if self.live not in ("off", "preview", "type"):
+            raise ValueError('output.live must be "off", "preview" or "type"')
         if not isinstance(self.detect_languages, list) or not isinstance(self.language_models, dict):
             raise ValueError("languages.detect must be a list and languages.models a table")
         for name, value, allowed in (
@@ -159,6 +166,7 @@ _SECTION_MAP = {
     ("output", "typer"): "typer",
     ("output", "trailing_space"): "trailing_space",
     ("output", "press_enter"): "press_enter",
+    ("output", "live"): "live",
     ("feedback", "notifications"): "notifications",
     ("feedback", "overlay"): "overlay",
     ("feedback", "overlay_position"): "overlay_position",

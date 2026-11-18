@@ -55,12 +55,15 @@ def test_multi_language_engine_routes_to_each_languages_model():
             self.loaded = True
 
         def detect_language(self, audio, allowed):
-            calls.append(("detect", self.model, tuple(allowed)))
-            if audio[0] > 0:
+            calls.append(("detect", self.model))
+            kind = float(audio[0])
+            if kind == 1:   # clear Arabic
                 return {"en": 0.02, "ar": 0.93}
-            if audio[0] < -1:  # unsure: Egyptian heard as something else entirely
-                return {"en": 0.13, "ar": 0.08}
-            return {"en": 0.88, "ar": 0.01}
+            if kind == -1:  # clear English
+                return {"en": 0.88, "ar": 0.01}
+            if kind == 2:   # Egyptian: the small model is lost, the big one knows
+                return {"en": 0.13, "ar": 0.08} if self.model == "small" else {"en": 0.05, "ar": 0.8}
+            return {"en": 0.13, "ar": 0.08}  # nobody is sure
 
         def transcribe(self, audio, sr, language=None):
             calls.append(("transcribe", self.model, language))
@@ -70,32 +73,35 @@ def test_multi_language_engine_routes_to_each_languages_model():
         made[model] = Fake(model)
         return made[model]
 
+    def clip(kind):
+        return np.full(16000, kind, dtype=np.float32)
+
     cfg = Config(language="auto", detect_languages=["en", "ar"],
-                 language_models={"en": "small.en", "ar": "large-v3-turbo"})
+                 language_models={"en": "small.en", "ar": "egyptian"})
     assert uses_language_profiles(cfg)
     eng = MultiLanguageEngine(cfg, make_engine=make)
     eng.load()
-    assert set(made) == {"small.en", "large-v3-turbo"}  # the big model detects
-    assert all(e.loaded for e in made.values())
+    assert set(made) == {"small", "small.en", "egyptian"}  # small is the fast detector
 
-    assert eng.transcribe(np.ones(16000, dtype=np.float32), 16000) == "large-v3-turbo:ar"
-    assert eng.transcribe(-np.ones(16000, dtype=np.float32), 16000) == "small.en:en"
-    assert calls[0] == ("detect", "large-v3-turbo", ("en", "ar"))
-    assert eng.last_language == "en"
-    # Unsure: goes to the multilingual Arabic model, not the English-only one.
-    assert eng.transcribe(np.full(10, -2.0, dtype=np.float32), 16000) == "large-v3-turbo:ar"
+    calls.clear()
+    assert eng.transcribe(clip(-1), 16000) == "small.en:en"
+    assert calls[0] == ("detect", "small") and len([c for c in calls if c[0] == "detect"]) == 1
+    assert eng.transcribe(clip(1), 16000) == "egyptian:ar"
+    calls.clear()
+    # Fast detector unsure -> the big model decides.
+    assert eng.transcribe(clip(2), 16000) == "egyptian:ar"
+    assert [c for c in calls if c[0] == "detect"] == [("detect", "small"), ("detect", "egyptian")]
+    # Everyone unsure -> the multilingual (Arabic) model, never the English-only one.
+    assert eng.transcribe(clip(3), 16000) == "egyptian:ar"
 
-    # Only English-only models chosen: the small detector is used.
-    made.clear()
-    cfg2 = Config(language="auto", detect_languages=["en", "fr"],
-                  language_models={"en": "small.en", "fr": "small"})
-    MultiLanguageEngine(cfg2, make_engine=make).load()
-    assert set(made) == {"small.en", "small"}
+    # Live preview uses fast models: small.en for English, small for Arabic.
+    assert eng.preview(clip(-1), 16000) == ("small.en:en", "en")
+    assert eng.preview(clip(1), 16000, language="ar") == ("small:ar", "ar")
 
     # One language: no detection at all.
     calls.clear()
     one = MultiLanguageEngine(Config(language="auto", detect_languages=["ar"]), make_engine=make)
-    one.transcribe(np.ones(10, dtype=np.float32), 16000)
+    one.transcribe(clip(1), 16000)
     assert calls == [("transcribe", "small", "ar")]
 
     assert not uses_language_profiles(Config(language="ar", detect_languages=["ar"]))

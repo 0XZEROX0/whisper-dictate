@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 # Below this share (among your chosen languages) the guess counts as unsure.
 UNSURE = 0.7
+_RANK = {"tiny": 0, "base": 1, "small": 2, "medium": 3}
 
 
 class MultiLanguageEngine(Engine):
@@ -41,16 +42,30 @@ class MultiLanguageEngine(Engine):
             self._engines[model] = self._make(model)
         return self._engines[model]
 
+    # -- models ---------------------------------------------------------------
+    def _strong_model(self) -> str | None:
+        """The strongest multilingual model you picked (e.g. the Egyptian one)."""
+        multi = [m for m in (self.cfg.model_for(lang) for lang in self.languages) if not m.endswith(".en")]
+        return max(multi, key=lambda m: _RANK.get(m, 4)) if multi else None
+
     @property
     def detector(self) -> Engine:
-        """The strongest multilingual model you picked: it's loaded anyway, and
-        small models often mistake dialects (e.g. Egyptian Arabic) for other languages."""
-        rank = {"tiny": 0, "base": 1, "small": 2, "medium": 3}
-        candidates = [self.cfg.model_for(lang) for lang in self.languages]
-        multi = [m for m in candidates if not m.endswith(".en")]
-        if not multi:
-            return self._engine(self.cfg.detector_model)
-        return self._engine(max(multi, key=lambda m: rank.get(m, 4)))
+        """Fast detector: a small multilingual model (about 0.5 s on a laptop CPU)."""
+        return self._engine(self.cfg.detector_model)
+
+    @property
+    def strong_detector(self) -> Engine | None:
+        """Asked only when the fast one is unsure: big models know dialects much
+        better (base mistook Egyptian Arabic for Sinhala) but take seconds on a CPU."""
+        strong = self._strong_model()
+        if strong is None or _RANK.get(strong, 4) <= _RANK.get(self.cfg.detector_model, 4):
+            return None
+        return self._engine(strong)
+
+    def preview_model(self, lang: str) -> str:
+        """A model fast enough for live text: the language's own if it's small, else the detector."""
+        model = self.cfg.model_for(lang)
+        return model if _RANK.get(model.removesuffix(".en"), 4) <= 2 else self.cfg.detector_model
 
     def _fallback_language(self) -> str | None:
         """Where audio goes when detection is unsure: a language whose model also
@@ -66,26 +81,45 @@ class MultiLanguageEngine(Engine):
         for lang in self.languages:
             self._engine(self.cfg.model_for(lang)).load()
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+    # -- detection ------------------------------------------------------------
+    def _ask(self, engine: Engine, audio: np.ndarray) -> tuple[str, float, dict]:
+        probs = engine.detect_language(audio, self.languages)
+        lang = max(self.languages, key=lambda code: probs.get(code, 0.0))
+        share = probs.get(lang, 0.0) / (sum(probs.values()) or 1.0)  # among your languages only
+        return lang, share, probs
+
+    def detect(self, audio: np.ndarray, allow_strong: bool = True) -> str:
         if len(self.languages) == 1:
-            lang = self.languages[0]
-        else:
-            t0 = time.monotonic()
-            probs = self.detector.detect_language(audio, self.languages)
-            lang = max(self.languages, key=lambda code: probs.get(code, 0.0))
-            total = sum(probs.values()) or 1.0
-            share = probs.get(lang, 0.0) / total  # confidence among your languages only
-            fallback = self._fallback_language()
-            note = ""
-            if share < UNSURE and fallback and fallback != lang:
-                note = f", unsure so using {fallback}"
-                lang = fallback
-            log.info("language %s (%s)%s in %.2fs", lang,
-                     ", ".join(f"{k} {v * 100:.0f}%" for k, v in probs.items()), note,
-                     time.monotonic() - t0)
+            return self.languages[0]
+        t0 = time.monotonic()
+        lang, share, probs = self._ask(self.detector, audio)
+        how = "fast"
+        strong = self.strong_detector if allow_strong else None
+        if share < UNSURE and strong is not None:
+            lang, share, probs = self._ask(strong, audio)
+            how = "fast unsure, big model"
+        fallback = self._fallback_language()
+        note = ""
+        if share < UNSURE and fallback and fallback != lang:
+            note = f", unsure so using {fallback}"
+            lang = fallback
+        log.info("language %s (%s; %s)%s in %.2fs", lang,
+                 ", ".join(f"{k} {v * 100:.0f}%" for k, v in probs.items()), how, note,
+                 time.monotonic() - t0)
+        return lang
+
+    # -- transcription ----------------------------------------------------------
+    def transcribe(self, audio: np.ndarray, sample_rate: int, language: str | None = None) -> str:
+        lang = language or self.detect(audio)
         self.last_language = lang
-        engine = self._engine(self.cfg.model_for(lang))
-        return engine.transcribe(audio, sample_rate, language=lang)
+        return self._engine(self.cfg.model_for(lang)).transcribe(audio, sample_rate, language=lang)
+
+    def preview(self, audio: np.ndarray, sample_rate: int, language: str | None = None) -> tuple[str, str]:
+        """Quick draft text for live display: (text, language)."""
+        lang = language or self.detect(audio, allow_strong=False)
+        engine = self._engine(self.preview_model(lang))
+        engine.load()
+        return engine.transcribe(audio, sample_rate, language=lang), lang
 
     def describe(self) -> str:
         parts = ", ".join(f"{lang}: {self.cfg.model_for(lang)}" for lang in self.languages)

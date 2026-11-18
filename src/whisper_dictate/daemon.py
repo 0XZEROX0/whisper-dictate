@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -14,6 +15,109 @@ import numpy as np
 from .config import Config
 
 log = logging.getLogger(__name__)
+
+
+FRAME = 0.05  # seconds per loudness frame for pause detection
+
+
+def pause_at(audio: np.ndarray, sr: int, start: int, min_speech: float = 0.8,
+             min_pause: float = 0.6) -> int | None:
+    """End of the first spoken phrase after `start` that is followed by a pause.
+
+    Loudness is judged against this recording's own quiet level, so it works
+    with different microphones and rooms. Returns a sample index, or None.
+    """
+    n = int(sr * FRAME)
+    seg = audio[start:]
+    frames = len(seg) // n
+    if frames * FRAME < min_speech + min_pause:
+        return None
+    rms = np.sqrt(np.mean(seg[: frames * n].reshape(frames, n) ** 2, axis=1))
+    whole = np.sqrt(np.mean(audio[: (len(audio) // n) * n].reshape(-1, n) ** 2, axis=1))
+    floor = float(np.percentile(whole, 15))
+    threshold = max(floor * 2.5, 0.004)
+    loud = rms > threshold
+    need = int(min_pause / FRAME)
+    spoken = 0
+    quiet = 0
+    for i, is_loud in enumerate(loud):
+        if is_loud:
+            spoken += 1
+            quiet = 0
+        else:
+            quiet += 1
+            if quiet >= need and spoken * FRAME >= min_speech * 0.5 and i * FRAME >= min_speech:
+                return start + (i - need // 2) * n  # cut in the middle of the pause
+    return None
+
+
+class LiveSession(threading.Thread):
+    """Runs while recording with live transcription on.
+
+    preview: re-transcribes what you've said every moment with a fast model and
+             publishes it for the floating pill; the final text is typed on stop.
+    type:    also types each phrase as soon as you pause, with the real model.
+    """
+
+    def __init__(self, dictation: "Dictation"):
+        super().__init__(daemon=True, name="live")
+        self.d = dictation
+        self.mode = dictation.cfg.live
+        self.sr = dictation.cfg.sample_rate
+        self.done = threading.Event()
+        self.committed = 0          # samples already typed (type mode)
+        self.committed_text = ""    # what was typed so far
+        self.preview = ""
+        self.language: str | None = None
+        self.typed_any = False
+
+    def text(self) -> str:
+        return (self.committed_text + " " + self.preview).strip()
+
+    def run(self) -> None:
+        try:
+            while not self.done.wait(0.25):
+                audio = self.d.recorder.snapshot()
+                if self.mode == "type" and not self.d.keys_held():
+                    cut = pause_at(audio, self.sr, self.committed)
+                    if cut is not None:
+                        self._commit(audio[self.committed:cut])
+                        self.committed = cut
+                        continue
+                self._preview(audio[self.committed:])
+        except Exception:
+            log.exception("live transcription failed")
+
+    def _language(self, audio: np.ndarray) -> str | None:
+        if self.language is None and len(audio) > 1.5 * self.sr and hasattr(self.d.engine, "detect"):
+            with self.d.engine_lock:
+                self.language = self.d.engine.detect(audio, allow_strong=False)
+        return self.language
+
+    def _preview(self, audio: np.ndarray) -> None:
+        if len(audio) < 0.5 * self.sr:
+            return
+        audio = audio[-int(25 * self.sr):]  # keep it quick on long dictations
+        lang = self._language(audio)
+        with self.d.engine_lock:
+            text, lang = self.d.engine.preview(audio, self.sr, language=lang)
+        if not self.done.is_set():
+            self.preview = text.strip()
+
+    def _commit(self, audio: np.ndarray) -> None:
+        with self.d.engine_lock:
+            text = self.d.engine.transcribe(audio, self.sr).strip()
+        self.preview = ""
+        if not text:
+            return
+        log.info("live: typing phrase %r", text)
+        self.d.typer.type(text + " ")
+        self.committed_text = (self.committed_text + " " + text).strip()
+        self.typed_any = True
+
+    def finish(self) -> None:
+        self.done.set()
+        self.join()
 
 
 class Dictation:
@@ -44,6 +148,8 @@ class Dictation:
         # Ctrl/Alt are down would turn letters into shortcuts, so we wait.
         self.keys_held = lambda: False
         self._event = ("", 0.0)  # (name, monotonic time) of the last outcome
+        self.engine_lock = threading.Lock()
+        self.live: LiveSession | None = None
 
     # -- commands -------------------------------------------------------
     @property
@@ -63,6 +169,9 @@ class Dictation:
                 log.exception("could not open microphone")
                 self.notifier.show("Microphone error", str(exc), urgency="critical", timeout_ms=4000)
                 return f"error: {exc}"
+            if self.cfg.live != "off" and hasattr(self.recorder, "snapshot"):
+                self.live = LiveSession(self)
+                self.live.start()
         self.notifier.show("Listening…", timeout_ms=60000)
         return "recording"
 
@@ -71,14 +180,15 @@ class Dictation:
             if not self.recorder.recording:
                 return "not recording"
             audio = self.recorder.stop()
+            live, self.live = self.live, None
         seconds = len(audio) / self.cfg.sample_rate
-        if seconds < self.cfg.min_seconds:
+        if seconds < self.cfg.min_seconds and live is None:
             self.notifier.show("Too short, ignored", timeout_ms=1000)
             return "too short"
         with self._lock:
             self._busy += 1
         self.notifier.show("Transcribing…", timeout_ms=30000)
-        self._jobs.put(audio)
+        self._jobs.put((audio, live))
         return "transcribing"
 
     def toggle(self) -> str:
@@ -89,6 +199,9 @@ class Dictation:
             if not self.recorder.recording:
                 return "not recording"
             self.recorder.stop()
+            live, self.live = self.live, None
+        if live is not None:
+            live.done.set()
         self.notifier.show("Cancelled", timeout_ms=1000)
         self._flash("empty")
         return "cancelled"
@@ -121,19 +234,28 @@ class Dictation:
     # -- worker ---------------------------------------------------------
     def _work(self) -> None:
         while True:
-            audio = self._jobs.get()
-            if audio is None:
+            job = self._jobs.get()
+            if job is None:
                 return
+            audio, live = job
             try:
-                self._process(audio)
+                if live is not None:
+                    live.finish()  # let a phrase being typed land first
+                    audio = audio[live.committed:]
+                self._process(audio, live)
             finally:
                 with self._lock:
                     self._busy -= 1
 
-    def _process(self, audio: np.ndarray) -> None:
+    def _process(self, audio: np.ndarray, live: LiveSession | None = None) -> None:
         t0 = time.monotonic()
+        typed_before = live is not None and live.typed_any
         try:
-            text = self.engine.transcribe(audio, self.cfg.sample_rate).strip()
+            if len(audio) < self.cfg.min_seconds * self.cfg.sample_rate:
+                text = ""
+            else:
+                with self.engine_lock:
+                    text = self.engine.transcribe(audio, self.cfg.sample_rate).strip()
         except Exception as exc:
             log.exception("transcription failed")
             self.notifier.show("Transcription failed", str(exc), urgency="critical", timeout_ms=5000)
@@ -141,6 +263,11 @@ class Dictation:
             return
         log.info("transcribed %.1fs of audio in %.2fs: %r",
                  len(audio) / self.cfg.sample_rate, time.monotonic() - t0, text)
+        if not text and typed_before:
+            if self.cfg.press_enter:
+                self.typer.press_enter()
+            self._flash("done")
+            return
         if not text:
             self.notifier.show("Didn't catch that", timeout_ms=1200)
             self._flash("empty")
@@ -167,6 +294,10 @@ class Dictation:
     def _flash(self, name: str) -> None:
         self._event = (name, time.monotonic())
 
+    def live_text(self) -> str:
+        live = self.live
+        return live.text() if live is not None else ""
+
     def overlay_state(self) -> tuple[str, float]:
         """State for the on-screen indicator, plus the mic level (0..1)."""
         if self.recorder.recording:
@@ -191,9 +322,10 @@ class Dictation:
 class Broadcaster(threading.Thread):
     """Streams the overlay state to subscribed clients (the overlay, the settings window)."""
 
-    def __init__(self, source, interval: float = 0.04):
+    def __init__(self, source, interval: float = 0.04, text=lambda: ""):
         super().__init__(daemon=True, name="broadcast")
         self.source = source
+        self.text = text
         self.interval = interval
         self._clients: list = []
         self._lock = threading.Lock()
@@ -206,6 +338,9 @@ class Broadcaster(threading.Thread):
 
     def _line(self) -> bytes:
         state, level = self.source()
+        text = self.text() if state == "recording" else ""
+        if text:
+            return f"{state} {level:.3f} {json.dumps(text, ensure_ascii=False)}\n".encode()
         return f"{state} {level:.3f}\n".encode()
 
     def _send_to(self, clients, data: bytes) -> None:
@@ -272,7 +407,7 @@ def run_daemon(cfg: Config, *, no_hotkey: bool = False, no_overlay: bool = False
             return "bye"
         return dictation.handle(cmd)
 
-    broadcaster = Broadcaster(dictation.overlay_state)
+    broadcaster = Broadcaster(dictation.overlay_state, text=dictation.live_text)
     broadcaster.start()
     server = IPCServer(handler)
     server.on_subscribe = broadcaster.add

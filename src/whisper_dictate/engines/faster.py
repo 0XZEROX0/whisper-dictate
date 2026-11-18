@@ -64,6 +64,17 @@ class FasterWhisperEngine(Engine):
         probs = dict(info.all_language_probs or [(info.language, info.language_probability)])
         return {lang: probs.get(lang, 0.0) for lang in allowed}
 
+    def preview(self, audio: np.ndarray, sample_rate: int, language: str | None = None) -> tuple[str, str]:
+        """Live text. Big models are about as slow as speech on a CPU, so a small one drafts it."""
+        lang = language or (None if self.cfg.language in ("", "auto") else self.cfg.language)
+        name = self.model_name.removesuffix(".en")
+        if name in ("tiny", "base", "small"):
+            return self.transcribe(audio, sample_rate, language=lang), lang or ""
+        if getattr(self, "_preview", None) is None:
+            self._preview = FasterWhisperEngine(self.cfg, "small.en" if lang == "en" else "small")
+        self._preview.load()
+        return self._preview.transcribe(audio, sample_rate, language=lang), lang or ""
+
     def transcribe(self, audio: np.ndarray, sample_rate: int, language: str | None = None) -> str:
         if sample_rate != 16000:
             raise ValueError("faster-whisper expects 16 kHz audio")

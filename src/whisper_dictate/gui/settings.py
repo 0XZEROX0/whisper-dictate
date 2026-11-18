@@ -26,7 +26,7 @@ from .client import StateClient
 
 # Fields the window edits. Saving only writes the ones you changed, on top of
 # whatever is on disk, so edits made elsewhere meanwhile aren't overwritten.
-FIELDS = ("hotkey", "mode", "language", "model", "detect_languages", "language_models", "engine", "device", "typer", "trailing_space", "press_enter",
+FIELDS = ("hotkey", "mode", "live", "language", "model", "detect_languages", "language_models", "engine", "device", "typer", "trailing_space", "press_enter",
           "overlay", "overlay_position", "notifications", "check_updates")
 
 STATUS = {
@@ -602,7 +602,7 @@ class SettingsWindow(QWidget):
 
         if live:
             self.client = StateClient(self)
-            self.client.state.connect(lambda s, _lvl: self._show_status(s))
+            self.client.state.connect(lambda s, _lvl, _text: self._show_status(s))
             self.client.start()
             if self.cfg.check_updates:
                 QTimer.singleShot(500, lambda: self._check_updates(quiet=True))
@@ -733,6 +733,10 @@ class SettingsWindow(QWidget):
         self.enter.toggled.connect(self._mark)
         card.add_row("Press Enter after typing", "Sends the message right away in chats and search boxes.",
                      self.enter)
+        self.live = combo_box([("off", "Off"), ("preview", "Show words as I speak"),
+                               ("type", "Type each phrase when I pause")])
+        self.live.currentIndexChanged.connect(self._live_changed)
+        self.live_row = card.add_row("Live transcription", " ", self.live, wide=True)
         col.addWidget(card)
 
         # Feedback
@@ -818,6 +822,7 @@ class SettingsWindow(QWidget):
             "typer": self.typer.currentData(),
             "trailing_space": self.trailing.isChecked(),
             "press_enter": self.enter.isChecked(),
+            "live": self.live.currentData(),
             "overlay": self.overlay.isChecked(),
             "overlay_position": self.position.currentData(),
             "notifications": self.notifications.currentData(),
@@ -836,6 +841,7 @@ class SettingsWindow(QWidget):
         set_combo(self.typer, cfg.typer)
         self.trailing.setChecked(cfg.trailing_space)
         self.enter.setChecked(cfg.press_enter)
+        set_combo(self.live, cfg.live)
         self.overlay.setChecked(cfg.overlay)
         set_combo(self.position, cfg.overlay_position)
         set_combo(self.notifications, cfg.notifications)
@@ -847,6 +853,7 @@ class SettingsWindow(QWidget):
         self._engine_changed(mark=False)
         self._model_changed()
         self._show_profiles()
+        self._live_changed()
         self._mark()
 
     def _changed_fields(self) -> dict:
@@ -906,6 +913,14 @@ class SettingsWindow(QWidget):
             self.model_row.setVisible(True)
             if self.model_row.divider is not None:
                 self.model_row.divider.setVisible(True)
+
+    def _live_changed(self, *_args) -> None:
+        self.live_row.desc.setText({
+            "off": "Text is typed once you stop.",
+            "preview": "Words appear in the floating pill while you talk; the final text is typed when you stop.",
+            "type": "Each phrase is typed as soon as you pause, so long dictations land as you go.",
+        }.get(self.live.currentData(), ""))
+        self._mark()
 
     def _mode_changed(self, mark: bool = True) -> None:
         self.mode_hint.setText(

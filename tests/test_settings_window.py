@@ -177,3 +177,17 @@ def test_models_card_lists_and_deletes(app, cfg_home, monkeypatch):
     items.pop()
     card.refresh()
     assert len(card.models) == 1
+
+
+def test_overlay_grows_for_live_text(app):
+    from whisper_dictate.gui import overlay
+
+    o = overlay.Overlay()
+    o.set_state("recording", 0.4, "this is a fairly long sentence that is being spoken right now")
+    assert o.width() > overlay.WIDTH
+    o.grab()
+    o.set_state("recording", 0.4, "ده أول تجربة للعربي المصري")
+    o.grab()
+    o.set_state("transcribing", 0.0)
+    assert o.width() == overlay.WIDTH and o.text == ""
+    assert overlay._is_rtl("ده hello") and not overlay._is_rtl("hello ده")

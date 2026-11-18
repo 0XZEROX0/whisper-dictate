@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import socket
 import threading
 from pathlib import Path
@@ -112,7 +113,7 @@ def _readline(conn: socket.socket, limit: int = 1024) -> str:
 
 
 def subscribe(path: Path | None = None, timeout: float | None = None):
-    """Yield (state, level) tuples from the daemon until it goes away."""
+    """Yield (state, level, live text) tuples from the daemon until it goes away."""
     path = path or socket_path()
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -120,8 +121,17 @@ def subscribe(path: Path | None = None, timeout: float | None = None):
     sock.sendall(STREAM_COMMAND.encode() + b"\n")
     with sock, sock.makefile() as fh:
         for line in fh:
-            parts = line.split()
-            if not parts:
+            parts = line.rstrip("\n").split(" ", 2)
+            if not parts or not parts[0]:
                 continue
-            level = float(parts[1]) if len(parts) > 1 else 0.0
-            yield parts[0], level
+            try:
+                level = float(parts[1]) if len(parts) > 1 else 0.0
+            except ValueError:
+                level = 0.0
+            text = ""
+            if len(parts) > 2:
+                try:
+                    text = json.loads(parts[2])
+                except ValueError:
+                    pass
+            yield parts[0], level, text

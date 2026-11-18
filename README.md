@@ -133,6 +133,9 @@ notifications = "errors"   # "errors", "all" or "off"
 [output]
 typer = "auto"             # ydotool, wtype, xdotool, clipboard
 trailing_space = true
+press_enter = false        # press Enter after typing (send a chat message)
+live = "off"               # "preview": words appear in the pill as you talk
+                           # "type": each phrase is typed when you pause
 ```
 
 Restart after editing: `systemctl --user restart whisper-dictate`.

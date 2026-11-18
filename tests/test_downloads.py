@@ -92,7 +92,7 @@ def test_local_models_partial_stale_and_delete(tmp_path, monkeypatch):
     assert downloads.models_in_use(Config(model="small")) == {"small"}
     cfg = Config(language="auto", detect_languages=["en", "ar"],
                  language_models={"en": "small.en", "ar": "faster-whisper-egyptian-turbo"})
-    assert downloads.models_in_use(cfg) == {"small.en", "faster-whisper-egyptian-turbo"}
+    assert downloads.models_in_use(cfg) == {"small.en", "faster-whisper-egyptian-turbo", "small"}
 
     downloads.delete_model(found["large-v3"].key)
     downloads.delete_model(found["small.en"].key)

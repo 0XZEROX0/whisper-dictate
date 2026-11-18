@@ -12,7 +12,7 @@ import sys
 import time
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from ..config import load_config
@@ -39,7 +39,33 @@ COLORS = {
     "starting": QColor(theme.AMBER),
 }
 WIDTH, HEIGHT, MARGIN = 236, 52, 56
+MAX_WIDTH = 760  # the pill grows to show live text up to this width
 BARS = 9
+
+
+def _tail(text: str, metrics: QFontMetrics, width: float) -> str:
+    """The end of the text that fits, starting at a word: the newest words stay visible."""
+    if metrics.horizontalAdvance(text) <= width:
+        return text
+    words = text.split()
+    # In the pill's left-to-right layout an Arabic run is drawn as one block, so
+    # the "…" goes after it to land on its right, where Arabic reading starts.
+    mark = (lambda t: t + " …") if _is_rtl(text) else (lambda t: "… " + t)
+    while len(words) > 1 and metrics.horizontalAdvance(mark(" ".join(words))) > width:
+        words.pop(0)
+    return mark(" ".join(words))
+
+
+def _is_rtl(text: str) -> bool:
+    import unicodedata
+
+    for ch in text:
+        kind = unicodedata.bidirectional(ch)
+        if kind in ("R", "AL"):
+            return True
+        if kind == "L":
+            return False
+    return False
 
 
 class Overlay(QWidget):
@@ -57,6 +83,7 @@ class Overlay(QWidget):
         self.setWindowTitle("whisper-dictate indicator")
 
         self.state = "idle"
+        self.text = ""
         self.level = 0.0
         self.smooth = 0.0
         self.t0 = time.monotonic()
@@ -82,7 +109,7 @@ class Overlay(QWidget):
         screen = QGuiApplication.screenAt(QGuiApplication.primaryScreen().geometry().center()) \
             or QGuiApplication.primaryScreen()
         geo = screen.availableGeometry()
-        x = geo.x() + (geo.width() - WIDTH) // 2
+        x = geo.x() + (geo.width() - self.width()) // 2
         y = geo.y() + MARGIN if self.position == "top" else geo.y() + geo.height() - HEIGHT - MARGIN
         self.move(x, y)
 
@@ -99,11 +126,28 @@ class Overlay(QWidget):
         self._update_visibility()
         self.update()
 
+    def _set_text(self, text: str) -> None:
+        if text == self.text:
+            return
+        self.text = text
+        width = WIDTH
+        if text:
+            font = QFont()
+            font.setPixelSize(15)
+            font.setWeight(QFont.DemiBold)
+            width = min(max(WIDTH, QFontMetrics(font).horizontalAdvance(text) + 112), MAX_WIDTH)
+        if width != self.width():
+            self.setFixedSize(width, HEIGHT)
+            if self.isVisible():
+                self._place()
+        self.update()
+
     def _shown(self) -> bool:
         return self.state in LABELS or (self.state in ("starting", "loading") and self.download is not None)
 
-    def set_state(self, state: str, level: float) -> None:
+    def set_state(self, state: str, level: float, text: str = "") -> None:
         self.level = level
+        self._set_text(text if state == "recording" else "")
         if state == self.state:
             return
         self.state = state
@@ -147,12 +191,13 @@ class Overlay(QWidget):
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        rect = QRectF(1, 1, WIDTH - 2, HEIGHT - 2)
+        W = self.width()
+        rect = QRectF(1, 1, W - 2, HEIGHT - 2)
         path = QPainterPath()
         path.addRoundedRect(rect, HEIGHT / 2 - 1, HEIGHT / 2 - 1)
         p.fillPath(path, QColor(16, 18, 26, 240))
         # Thin gradient rim in the app's colors.
-        rim = QLinearGradient(0, 0, WIDTH, 0)
+        rim = QLinearGradient(0, 0, W, 0)
         rim.setColorAt(0, QColor(124, 92, 255, 150))
         rim.setColorAt(1, QColor(255, 92, 138, 150))
         p.setPen(QPen(rim, 1.2))
@@ -176,17 +221,22 @@ class Overlay(QWidget):
         font.setWeight(QFont.DemiBold)
         p.setFont(font)
         label = LABELS.get(self.state, "")
+        if self.state == "recording" and self.text:
+            label = _tail(self.text, QFontMetrics(font), W - 112)
         d = self.download if self.state in ("starting", "loading") else None
         if d is not None:
             frac = d.fraction
             label = f"Downloading {frac * 100:.0f}%" if frac is not None else "Downloading…"
             if frac is not None:
-                track = QRectF(88, HEIGHT - 14, WIDTH - 112, 3)
+                track = QRectF(88, HEIGHT - 14, W - 112, 3)
                 p.fillRect(track, QColor(255, 255, 255, 30))
                 p.fillRect(QRectF(track.x(), track.y(), track.width() * frac, 3), QColor(theme.ACCENT))
         if self.state == "transcribing":
             label += "." * (1 + int(t * 3) % 3)
-        p.drawText(QRectF(88, 0, WIDTH - 100, HEIGHT), Qt.AlignVCenter | Qt.AlignLeft, label)
+        align = Qt.AlignRight if self.state == "recording" and _is_rtl(self.text) else Qt.AlignLeft
+        p.setClipRect(QRectF(86, 0, W - 100, HEIGHT))
+        p.drawText(QRectF(88, 0, W - 104, HEIGHT), Qt.AlignVCenter | align, label)
+        p.setClipping(False)
 
     def _draw_bars(self, p: QPainter, box: QRectF, color: QColor, t: float) -> None:
         bar_w, gap = 4.0, 3.0
@@ -267,8 +317,8 @@ def run_overlay() -> int:
     tray = _tray(app)
     client = StateClient()
 
-    def on_state(state: str, level: float) -> None:
-        overlay.set_state(state, level)
+    def on_state(state: str, level: float, text: str = "") -> None:
+        overlay.set_state(state, level, text)
         if tray is not None:
             tray.setToolTip("whisper-dictate: " + LABELS.get(state, "ready").lower())
 

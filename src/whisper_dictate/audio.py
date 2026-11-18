@@ -45,6 +45,12 @@ class Recorder:
         )
         self._stream.start()
 
+    def snapshot(self) -> np.ndarray:
+        """Everything recorded so far, without stopping."""
+        with self._lock:
+            chunks = list(self._chunks)
+        return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+
     def stop(self) -> np.ndarray:
         stream, self._stream = self._stream, None
         self.level = 0.0
