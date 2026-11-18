@@ -407,10 +407,10 @@ class ModelsCard(QFrame):
 
     delete = Signal(object)
 
-    def __init__(self, in_use=lambda: set(), lister=local_models):
+    def __init__(self, in_use=lambda: set(), lister=local_models, engine=lambda: "faster-whisper"):
         super().__init__()
         self.setObjectName("card")
-        self.in_use, self.lister = in_use, lister
+        self.in_use, self.lister, self.engine = in_use, lister, engine
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(18, 8, 18, 8)
         self.box.setSpacing(0)
@@ -427,7 +427,8 @@ class ModelsCard(QFrame):
         except Exception:
             models = []
         used = self.in_use()
-        sig = [(m.key, m.partial, m.downloading, m.size // 10_000_000, m.name in used) for m in models]
+        sig = [(m.key, m.partial, m.downloading, m.size // 10_000_000, m.name in used, self.engine())
+               for m in models]
         if sig == self._signature:
             return
         self._signature = sig
@@ -456,14 +457,16 @@ class ModelsCard(QFrame):
             lay.setSpacing(12)
             text = QVBoxLayout()
             text.setSpacing(2)
-            t = QLabel(m.label + ("  (whisper.cpp)" if m.kind == "whisper.cpp" and "(GPU)" not in m.label else ""))
+            t = QLabel(m.label)
             t.setStyleSheet("font-weight: 600;")
             if m.downloading:
                 status = "Downloading"
             elif m.partial:
                 status = "Unfinished download"
-            elif m.name in used:
+            elif m.name in used and (m.kind == "whisper.cpp") == (self.engine() == "whisper-cpp"):
                 status = "In use"
+            elif m.kind == "whisper.cpp" and self.engine() != "whisper-cpp":
+                status = "Only for the GPU engine, which is off: safe to delete"
             else:
                 status = "Downloaded"
             d = QLabel(f"{human_size(m.size)}  ·  {status}")
@@ -760,7 +763,8 @@ class SettingsWindow(QWidget):
 
         # Models on disk
         col.addWidget(section("Models on this computer"))
-        self.models_card = ModelsCard(in_use=lambda: models_in_use(self.cfg))
+        self.models_card = ModelsCard(in_use=lambda: models_in_use(self.cfg),
+                                      engine=lambda: choose_engine_name(self.cfg))
         self.models_card.delete.connect(self._delete_model)
         col.addWidget(self.models_card)
 

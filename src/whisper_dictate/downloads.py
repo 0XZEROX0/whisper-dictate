@@ -272,7 +272,7 @@ def local_models() -> list[LocalModel]:
         for d in sorted(root.iterdir()):
             if d.is_file() and d.name.startswith("ggml-") and d.suffix == ".bin":
                 name = d.stem.removeprefix("ggml-")
-                found.append(LocalModel(str(d), name, f"{ModelInfo(name, '', '').label} (GPU)",
+                found.append(LocalModel(str(d), name, f"{ModelInfo(name, '', '').label}, GPU copy",
                                         _size([d]), False, False, "whisper.cpp"))
             elif d.is_file() and d.name.startswith("ggml-") and d.name.endswith(".part"):
                 found.append(LocalModel(str(d), d.name, d.name, _size([d]), True,

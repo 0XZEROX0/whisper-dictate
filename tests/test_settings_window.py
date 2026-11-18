@@ -191,3 +191,16 @@ def test_overlay_grows_for_live_text(app):
     o.set_state("transcribing", 0.0)
     assert o.width() == overlay.WIDTH and o.text == ""
     assert overlay._is_rtl("ده hello") and not overlay._is_rtl("hello ده")
+
+
+def test_gpu_copies_are_marked_safe_to_delete(app):
+    from whisper_dictate.downloads import LocalModel
+    from whisper_dictate.gui import settings
+
+    items = [LocalModel("/a", "small.en", "Small (English)", 484_000_000, False, False, "faster-whisper"),
+             LocalModel("/g", "small.en", "Small (English), GPU copy", 465_000_000, False, False, "whisper.cpp")]
+    card = settings.ModelsCard(in_use=lambda: {"small.en"}, lister=lambda: list(items))
+    texts = [w.text() for w in card.findChildren(QtWidgets.QLabel)]
+    assert "484 MB  ·  In use" in texts
+    assert any("Only for the GPU engine" in t for t in texts)
+    assert [b.isEnabled() for b in card.findChildren(QtWidgets.QPushButton)] == [False, True]
