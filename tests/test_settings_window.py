@@ -35,13 +35,13 @@ def test_save_only_writes_changed_fields(app, cfg_home, monkeypatch):
     # ...and the user only changes the mode in the window.
     win.mode.set_value("hold")
     win._mark()
-    assert win.save_btn.isEnabled()
+    assert win._autosave.isActive()  # saves by itself shortly
     win._save()
 
     saved = load_config()
     assert saved.mode == "hold"
     assert (saved.engine, saved.device) == ("faster-whisper", "cpu")  # not reset to auto
-    assert not win.save_btn.isEnabled()
+    assert not win._changed_fields()
 
 
 def test_unchanged_window_reloads_when_file_changes(app, cfg_home):
@@ -126,7 +126,7 @@ def test_detect_languages_with_a_model_each(app, cfg_home, monkeypatch):
     assert win2.profiles.models() == {"ar": "large-v3-turbo", "en": "small.en"}
     win2.profiles.remove("ar")
     assert win2.profiles.languages() == ["en"]
-    assert win2.save_btn.isEnabled()
+    assert win2._autosave.isActive()
 
 
 def test_download_progress_is_shown(app, cfg_home):
@@ -204,3 +204,29 @@ def test_gpu_copies_are_marked_safe_to_delete(app):
     assert "484 MB  ·  In use" in texts
     assert any("Only for the GPU engine" in t for t in texts)
     assert [b.isEnabled() for b in card.findChildren(QtWidgets.QPushButton)] == [False, True]
+
+
+def test_autosave_fires_and_light_changes_skip_the_restart(app, cfg_home, monkeypatch):
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    from whisper_dictate.gui import settings
+
+    restarts, asked = [], []
+    monkeypatch.setattr(settings.SettingsWindow, "_restart", lambda self, waited=0: restarts.append(1))
+    monkeypatch.setattr(settings, "_ask", lambda cmd: asked.append(cmd) or "reloaded")
+    monkeypatch.setattr(settings, "AUTOSAVE_MS", 50)
+    save_config(Config())
+    win = settings.SettingsWindow(live=False)
+    win.enter.setChecked(True)  # a light change
+    loop = QEventLoop()
+    QTimer.singleShot(400, loop.quit)
+    loop.exec()
+    assert load_config().press_enter is True
+    assert asked == ["reload"] and restarts == []
+    assert win.dirty_label.text() == "Saved ✓"
+
+    win.mode.set_value("hold")  # still light
+    set_combo = settings.set_combo
+    set_combo(win.language, "ar")  # needs a restart (model reload)
+    win._save()
+    assert restarts == [1]

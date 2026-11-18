@@ -17,6 +17,9 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 
+# Settings the running service can pick up without a restart (see Dictation.reload).
+LIVE_FIELDS = ("mode", "trailing_space", "press_enter", "paste", "live", "notifications", "min_seconds")
+
 FRAME = 0.05  # seconds per loudness frame for pause detection
 DETECT_SECONDS = 2.5  # speech needed before live mode decides the language
 
@@ -263,7 +266,26 @@ class Dictation:
     def handle(self, command: str) -> str:
         if command in ("toggle", "start", "stop", "cancel", "status"):
             return getattr(self, command)()
+        if command == "reload":
+            return self.reload()
         return f"error: unknown command {command!r}"
+
+    def reload(self) -> str:
+        """Apply settings that don't need the service restarted."""
+        from .config import load_config
+
+        try:
+            new = load_config()
+        except (OSError, ValueError) as exc:
+            return f"error: {exc}"
+        for name in LIVE_FIELDS:
+            setattr(self.cfg, name, getattr(new, name))
+        if hasattr(self.typer, "paste"):
+            self.typer.paste = new.paste
+        if hasattr(self.notifier, "mode"):
+            self.notifier.mode = new.notifications
+        log.info("settings reloaded")
+        return "reloaded"
 
     # -- hotkey adapters ------------------------------------------------
     def on_hotkey_press(self) -> None:

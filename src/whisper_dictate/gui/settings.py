@@ -18,6 +18,7 @@ from .. import __version__, updater
 from ..downloads import LocalModel, Tracker, delete_model, human_size, local_models, models_in_use
 from ..config import config_path, load_config, save_config
 from ..engines import choose_engine_name, cuda_available
+from ..daemon import LIVE_FIELDS
 from ..ipc import send_command
 from ..keymap import combo_from_keys, pretty_combo
 from ..models import LANGUAGES, download_whisper_cpp_model, models_for_language, whisper_cpp_model_path
@@ -26,6 +27,8 @@ from .client import StateClient
 
 # Fields the window edits. Saving only writes the ones you changed, on top of
 # whatever is on disk, so edits made elsewhere meanwhile aren't overwritten.
+AUTOSAVE_MS = 1200  # wait for a pause in your edits, so the service restarts once
+
 FIELDS = ("hotkey", "mode", "live", "paste", "language", "model", "detect_languages", "language_models", "engine", "device", "typer", "trailing_space", "press_enter",
           "overlay", "overlay_position", "notifications", "check_updates")
 
@@ -41,6 +44,14 @@ STATUS = {
     "starting": ("Loading model", theme.AMBER),
     "failed": ("Model failed to load", theme.RED),
 }
+
+
+def _ask(command: str) -> str:
+    """Ask the background service something; "" if it isn't running."""
+    try:
+        return send_command(command, timeout=2)
+    except OSError:
+        return ""
 
 
 def evdev_name(scan_code: int) -> str | None:
@@ -811,6 +822,12 @@ class SettingsWindow(QWidget):
         self.save_btn.setObjectName("primary")
         self.save_btn.setCursor(Qt.PointingHandCursor)
         self.save_btn.clicked.connect(self._save)
+        # Changes save on their own a moment after you make them.
+        self.save_btn.hide()
+        self._autosave = QTimer(self)
+        self._autosave.setSingleShot(True)
+        self._autosave.setInterval(AUTOSAVE_MS)
+        self._autosave.timeout.connect(self._save)
         f.addWidget(close)
         f.addWidget(self.save_btn)
         outer.addWidget(footer)
@@ -876,7 +893,13 @@ class SettingsWindow(QWidget):
         changed = self._changed_fields()
         self.save_btn.setEnabled(bool(changed))
         n = len(changed)
-        self.dirty_label.setText(f"{n} unsaved change{'s' if n != 1 else ''}" if n else "All changes saved")
+        if n:
+            self.dirty_label.setText("Saving…")
+            self._autosave.start()  # restarts the countdown on every change
+        else:
+            self._autosave.stop()
+            if self.dirty_label.text() in ("", "Saving…"):
+                self.dirty_label.setText("Changes save automatically")
 
     # -- reactions ----------------------------------------------------------------------
     def _fill_models(self, current: str) -> None:
@@ -1011,6 +1034,9 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(self, "Couldn't save", str(exc))
             return
         self._load(cfg)
+        if set(changed) <= set(LIVE_FIELDS) and _ask("reload").startswith("reloaded"):
+            self._saved()
+            return
         resolved = choose_engine_name(cfg, has_cuda=self.has_cuda, has_whisper_cpp=self.has_cpp)
         if resolved == "whisper-cpp" and not cfg.whisper_cpp_model_path \
                 and not whisper_cpp_model_path(cfg.model).exists():
@@ -1059,10 +1085,22 @@ class SettingsWindow(QWidget):
         run_in_thread(self, delete_model, model.key, lambda: self._systemctl("stop"),
                       on_done=done, on_failed=lambda msg: QMessageBox.warning(self, "Delete model", msg))
 
-    def _restart(self) -> None:
-        self.dirty_label.setText("Saved. Restarting dictation with the new settings…")
+    def _saved(self) -> None:
+        self.dirty_label.setText("Saved ✓")
+        QTimer.singleShot(2500, lambda: self.dirty_label.text() == "Saved ✓"
+                          and self.dirty_label.setText("Changes save automatically"))
+
+    def _restart(self, waited: int = 0) -> None:
+        # Never pull the rug out from under a dictation: wait until it's done.
+        state = _ask("status")
+        if state in ("recording", "transcribing") and waited < 120:
+            self.dirty_label.setText("Saved ✓  Applying when you finish dictating…")
+            QTimer.singleShot(1000, lambda: self._restart(waited + 1))
+            return
+        self.dirty_label.setText("Saved ✓  Restarting dictation with the new settings…")
         self._systemctl("restart")
-        QTimer.singleShot(2500, self._mark)
+        QTimer.singleShot(5000, lambda: self.dirty_label.text().startswith("Saved ✓  Restarting")
+                          and self.dirty_label.setText("Changes save automatically"))
 
     # -- updates --------------------------------------------------------------------------
     def _check_updates(self, quiet: bool) -> None:
@@ -1107,14 +1145,8 @@ class SettingsWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         if self._changed_fields():
-            answer = QMessageBox.question(
-                self, "Unsaved changes", "Save your changes before closing?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
-            if answer == QMessageBox.Cancel:
-                event.ignore()
-                return
-            if answer == QMessageBox.Save:
-                self._save()
+            self._autosave.stop()
+            self._save()  # changes save automatically; don't lose the last one
         if hasattr(self, "client"):
             self.client.stop()
             self.client.wait(1500)

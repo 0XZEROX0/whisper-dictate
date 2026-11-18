@@ -349,3 +349,15 @@ def test_live_type_streams_agreed_words_without_duplicates():
         time.sleep(0.02)
     assert "".join(typer.typed).split() == words  # every word once, in order
     assert len(typer.typed) > 1  # some landed while still talking
+
+
+def test_reload_applies_light_settings(tmp_path, monkeypatch):
+    from whisper_dictate.config import save_config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    d, typer = make()
+    typer.paste = False
+    save_config(Config(press_enter=True, paste=True, live="type", model="large-v3"))
+    assert d.handle("reload") == "reloaded"
+    assert d.cfg.press_enter and d.cfg.live == "type" and typer.paste
+    assert d.cfg.model != "large-v3"  # heavy settings wait for a restart
