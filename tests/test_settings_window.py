@@ -127,3 +127,33 @@ def test_detect_languages_with_a_model_each(app, cfg_home, monkeypatch):
     win2.profiles.remove("ar")
     assert win2.profiles.languages() == ["en"]
     assert win2.save_btn.isEnabled()
+
+
+def test_download_progress_is_shown(app, cfg_home):
+    from whisper_dictate.downloads import Tracker
+    from whisper_dictate.gui import settings
+
+    state = {"items": [("k", "Egyptian Arabic", 839_000_000, "", 1_618_000_000)]}
+    panel = settings.DownloadsPanel(Tracker(scanner=lambda: state["items"]))
+    panel.refresh()
+    assert not panel.isHidden()
+    title, bar, info = panel.rows["k"]
+    assert title.text() == "Downloading Egyptian Arabic  52%"
+    assert "779 MB left" in info.text()
+    state["items"] = []
+    panel.refresh()
+    assert panel.isHidden() and not panel.rows
+
+
+def test_overlay_shows_download_while_starting(app):
+    from whisper_dictate.downloads import Tracker
+    from whisper_dictate.gui import overlay
+
+    o = overlay.Overlay()
+    o.tracker = Tracker(scanner=lambda: [("k", "x", 500, "", 1000)])
+    o.set_state("starting", 0.0)
+    assert o.download is not None and o._shown()
+    o.grab()  # paints without errors
+    o.set_state("idle", 0.0)
+    o._poll_download()
+    assert o.download is None and not o._shown()

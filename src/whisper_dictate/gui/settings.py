@@ -11,10 +11,11 @@ from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, Sig
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMessageBox,
-    QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from .. import __version__, updater
+from ..downloads import Tracker
 from ..config import config_path, load_config, save_config
 from ..engines import choose_engine_name, cuda_available
 from ..ipc import send_command
@@ -335,6 +336,59 @@ class LanguageProfiles(QWidget):
         return {lang: combo.currentData() for lang, combo in self.rows.items()}
 
 
+class DownloadsPanel(QFrame):
+    """Shows model downloads in progress: how much is done, what's left, and how long."""
+
+    def __init__(self, tracker: Tracker | None = None):
+        super().__init__()
+        self.setObjectName("card")
+        self.tracker = tracker or Tracker()
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(18, 14, 18, 14)
+        self.box.setSpacing(6)
+        self.rows: dict[str, tuple[QLabel, QProgressBar, QLabel]] = {}
+        self.hide()
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(1000)
+        QTimer.singleShot(0, self.refresh)
+
+    def refresh(self) -> None:
+        try:
+            items = self.tracker.poll()
+        except Exception:
+            items = []
+        keys = {d.key for d in items}
+        for key in list(self.rows):
+            if key not in keys:
+                for w in self.rows.pop(key):
+                    w.setParent(None)
+                    w.deleteLater()
+        for d in items:
+            if d.key not in self.rows:
+                title = QLabel()
+                title.setStyleSheet("font-weight: 600;")
+                bar = QProgressBar()
+                bar.setTextVisible(False)
+                bar.setFixedHeight(8)
+                info = QLabel()
+                info.setObjectName("hint")
+                for w in (title, bar, info):
+                    self.box.addWidget(w)
+                self.rows[d.key] = (title, bar, info)
+            title, bar, info = self.rows[d.key]
+            frac = d.fraction
+            pct = f"  {frac * 100:.0f}%" if frac is not None else ""
+            title.setText(f"Downloading {d.name}{pct}")
+            if frac is None:
+                bar.setRange(0, 0)  # busy animation until the size is known
+            else:
+                bar.setRange(0, 1000)
+                bar.setValue(int(frac * 1000))
+            info.setText(d.summary())
+        self.setVisible(bool(items))
+
+
 def section(title: str) -> QLabel:
     label = QLabel(title.upper())
     label.setObjectName("sectionTitle")
@@ -491,6 +545,9 @@ class SettingsWindow(QWidget):
         col.addSpacing(8)
 
         # Hero: shortcut
+        self.downloads = DownloadsPanel()
+        col.addWidget(self.downloads)
+
         hero = QFrame()
         hero.setObjectName("hero")
         h = QVBoxLayout(hero)

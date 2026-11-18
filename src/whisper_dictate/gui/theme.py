@@ -38,6 +38,9 @@ QFrame#divider {{ background: {BORDER}; max-height: 1px; min-height: 1px; border
 QLabel#keycap {{ background: #2a2550; border: 1px solid #4b3fa0; border-bottom: 3px solid #4b3fa0;
                 border-radius: 9px; padding: 6px 12px; font-size: 16px; font-weight: 700; }}
 QLabel#plus {{ color: {MUTED}; font-size: 16px; }}
+QProgressBar {{ background: {FIELD}; border: none; border-radius: 4px; }}
+QProgressBar::chunk {{ border-radius: 4px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+    stop:0 {ACCENT}, stop:1 {ACCENT_2}); }}
 QLabel#statusPill {{ border-radius: 13px; padding: 4px 12px; font-weight: 600; font-size: 13px; }}
 
 QComboBox {{ background: {FIELD}; border: 1px solid {BORDER}; border-radius: 10px;

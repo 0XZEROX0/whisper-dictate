@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
 from ..config import load_config
 from ..ipc import send_command
+from ..downloads import Tracker
 from . import theme
 from .client import StateClient
 
@@ -35,6 +36,7 @@ COLORS = {
     "empty": QColor(theme.MUTED),
     "error": QColor(theme.RED),
     "loading": QColor(theme.AMBER),
+    "starting": QColor(theme.AMBER),
 }
 WIDTH, HEIGHT, MARGIN = 236, 52, 56
 BARS = 9
@@ -68,6 +70,13 @@ class Overlay(QWidget):
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
 
+        # While the service is still loading, show model download progress.
+        self.download = None
+        self.tracker = Tracker()
+        self.dl_timer = QTimer(self)
+        self.dl_timer.timeout.connect(self._poll_download)
+        self.dl_timer.start(1000)
+
     # -- placement ------------------------------------------------------
     def _place(self) -> None:
         screen = QGuiApplication.screenAt(QGuiApplication.primaryScreen().geometry().center()) \
@@ -78,21 +87,43 @@ class Overlay(QWidget):
         self.move(x, y)
 
     # -- state ----------------------------------------------------------
+    def _poll_download(self) -> None:
+        if self.state not in ("starting", "loading"):
+            self.download = None
+            return
+        try:
+            items = self.tracker.poll()
+        except Exception:
+            items = []
+        self.download = items[0] if items else None
+        self._update_visibility()
+        self.update()
+
+    def _shown(self) -> bool:
+        return self.state in LABELS or (self.state in ("starting", "loading") and self.download is not None)
+
     def set_state(self, state: str, level: float) -> None:
         self.level = level
         if state == self.state:
             return
         self.state = state
-        visible = state in LABELS
+        if state in ("starting", "loading"):
+            self._poll_download()
+        self._update_visibility()
+        self.update()
+
+    def _update_visibility(self) -> None:
+        visible = self._shown()
         if visible and not self.isVisible():
             self._place()
             self.setWindowOpacity(0.0)
             self.show()
             self.raise_()
             self._animate_opacity(1.0)
-        elif not visible and self.isVisible():
+        elif visible and self.fade.endValue() == 0.0 and self.fade.state() == QPropertyAnimation.Running:
+            self._animate_opacity(1.0)
+        elif not visible and self.isVisible() and self.fade.endValue() != 0.0:
             self._animate_opacity(0.0)
-        self.update()
 
     def _animate_opacity(self, target: float) -> None:
         self.fade.stop()
@@ -132,7 +163,7 @@ class Overlay(QWidget):
         icon = QRectF(16, 0, 64, HEIGHT)
         if self.state == "recording":
             self._draw_bars(p, icon, color, t)
-        elif self.state in ("transcribing", "loading"):
+        elif self.state in ("transcribing", "loading", "starting"):
             self._draw_dots(p, icon, color, t)
         elif self.state == "done":
             self._draw_check(p, icon, color)
@@ -145,6 +176,14 @@ class Overlay(QWidget):
         font.setWeight(QFont.DemiBold)
         p.setFont(font)
         label = LABELS.get(self.state, "")
+        d = self.download if self.state in ("starting", "loading") else None
+        if d is not None:
+            frac = d.fraction
+            label = f"Downloading {frac * 100:.0f}%" if frac is not None else "Downloading…"
+            if frac is not None:
+                track = QRectF(88, HEIGHT - 14, WIDTH - 112, 3)
+                p.fillRect(track, QColor(255, 255, 255, 30))
+                p.fillRect(QRectF(track.x(), track.y(), track.width() * frac, 3), QColor(theme.ACCENT))
         if self.state == "transcribing":
             label += "." * (1 + int(t * 3) % 3)
         p.drawText(QRectF(88, 0, WIDTH - 100, HEIGHT), Qt.AlignVCenter | Qt.AlignLeft, label)
