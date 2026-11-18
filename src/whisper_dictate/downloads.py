@@ -76,13 +76,18 @@ def hub_cache() -> Path:
 
 
 def _size(paths) -> int:
-    total = 0
+    """Total size, following symlinks (newer huggingface_hub links blobs to a
+    shared store) and counting each real file once."""
+    total, seen = 0, set()
     for f in paths:
         try:
-            if f.is_file() and not f.is_symlink():
-                total += f.stat().st_size
+            st = f.stat()  # follows symlinks
         except OSError:
-            pass
+            continue
+        if not os.path.isfile(f) or (st.st_dev, st.st_ino) in seen:
+            continue
+        seen.add((st.st_dev, st.st_ino))
+        total += st.st_size
     return total
 
 
@@ -254,6 +259,8 @@ def local_models() -> list[LocalModel]:
             if "whisper" not in repo.lower():
                 continue  # leave other apps' models alone
             blobs = list((repo_dir / "blobs").glob("*")) if (repo_dir / "blobs").is_dir() else []
+            if not blobs and not any((repo_dir / "snapshots").glob("*/*")):
+                continue  # only a ref left behind by a download into another folder
             pending = [b for b in blobs if b.name.endswith(".incomplete")]
             complete = any((snap / "model.bin").exists() for snap in (repo_dir / "snapshots").glob("*"))
             name = _hub_model_name(repo)
@@ -306,6 +313,14 @@ def delete_model(path: str, stop_service=None) -> None:
     import signal
 
     p = Path(path)
+    # Files this model links to elsewhere (huggingface_hub's shared blob store).
+    linked = set()
+    if p.is_dir():
+        for f in p.rglob("*"):
+            if f.is_symlink():
+                target = f.resolve()
+                if p.resolve() not in target.parents:
+                    linked.add(target)
     for pid in writers(p):
         if pid == os.getpid():
             continue
@@ -327,3 +342,13 @@ def delete_model(path: str, stop_service=None) -> None:
         shutil.rmtree(p, ignore_errors=True)
     elif p.exists():
         p.unlink()
+    if linked:
+        still_used = set()
+        for f in hub_cache().glob("models--*/**/*"):
+            if f.is_symlink():
+                still_used.add(f.resolve())
+        for target in linked - still_used:
+            try:
+                target.unlink()
+            except OSError:
+                pass

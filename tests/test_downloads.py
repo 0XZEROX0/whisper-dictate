@@ -98,3 +98,35 @@ def test_local_models_partial_stale_and_delete(tmp_path, monkeypatch):
     downloads.delete_model(found["small.en"].key)
     assert not big.exists() and not (models / "ggml-small.en.bin").exists()
     assert {m.name for m in downloads.local_models()} == {"small"}
+
+
+def test_shared_blob_store_sizes_and_delete(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    hub = tmp_path / "hub"
+    store = hub / "blobs" / "ab"
+    store.mkdir(parents=True)
+    (store / "sha1").write_bytes(b"x" * 1000)
+    (store / "shared").write_bytes(b"x" * 7)
+    repo = hub / "models--Systran--faster-whisper-small.en"
+    (repo / "blobs").mkdir(parents=True)
+    (repo / "blobs" / "sha1").symlink_to(store / "sha1")
+    (repo / "blobs" / "shared").symlink_to(store / "shared")
+    (repo / "snapshots" / "r").mkdir(parents=True)
+    (repo / "snapshots" / "r" / "model.bin").symlink_to(repo / "blobs" / "sha1")
+    other = hub / "models--Systran--faster-whisper-base"
+    (other / "blobs").mkdir(parents=True)
+    (other / "blobs" / "shared").symlink_to(store / "shared")
+    (other / "snapshots" / "r").mkdir(parents=True)
+    (other / "snapshots" / "r" / "model.bin").write_bytes(b"x")
+    ref_only = hub / "models--Someone--faster-whisper-egyptian" / "refs"
+    ref_only.mkdir(parents=True)
+    (ref_only / "main").write_text("abc")
+
+    found = {m.name: m for m in downloads.local_models()}
+    assert set(found) == {"small.en", "base"}
+    assert found["small.en"].size == 1007 and not found["small.en"].partial
+
+    downloads.delete_model(found["small.en"].key)
+    assert not (store / "sha1").exists()   # freed in the shared store
+    assert (store / "shared").exists()     # still used by base
