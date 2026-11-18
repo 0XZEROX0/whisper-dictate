@@ -63,3 +63,10 @@ def test_language_profiles_roundtrip(tmp_path, monkeypatch):
     assert loaded.model_for("ar") == "large-v3-turbo"
     assert loaded.model_for("de") == "small"  # falls back to model, minus .en
     assert Config(model="small.en").model_for("fr") == "small"
+
+
+def test_old_base_detector_is_upgraded():
+    from whisper_dictate.config import parse_config
+
+    assert parse_config({"languages": {"detector_model": "base"}}).detector_model == "small"
+    assert parse_config({"languages": {"detector_model": "tiny"}}).detector_model == "tiny"

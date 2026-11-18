@@ -200,6 +200,8 @@ def parse_config(data: dict) -> Config:
             setattr(cfg, attr, data[section][key])
     if isinstance(cfg.notifications, bool):  # v0.1 used true/false
         cfg.notifications = "errors" if cfg.notifications else "off"
+    if cfg.detector_model == "base":  # v0.4 default (no UI for it); base misreads dialects
+        cfg.detector_model = "small"
     cfg.validate()
     return cfg
 
