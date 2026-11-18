@@ -188,9 +188,8 @@ class Overlay(QWidget):
         self.leaving = False
         self.slide.stop()
         self.slide.setDuration(ENTER_MS)
-        self.slide.setKeyValues([])
-        self.slide.setStartValue(self.pill_y)
-        self.slide.setEndValue(self._rest_y())
+        # Replace all key frames at once (clearing them first emits an empty value).
+        self.slide.setKeyValues([(0.0, self.pill_y), (1.0, self._rest_y())])
         curve = QEasingCurve(QEasingCurve.OutBack)
         curve.setOvershoot(1.6)
         self.slide.setEasingCurve(curve)
@@ -201,15 +200,13 @@ class Overlay(QWidget):
         self.leaving = True
         self.slide.stop()
         self.slide.setDuration(EXIT_MS)
-        self.slide.setEasingCurve(QEasingCurve.Linear)
-        self.slide.setKeyValues([])
-        self.slide.setKeyValueAt(0.0, self.pill_y)
-        self.slide.setKeyValueAt(0.3, self._dip_y())
-        self.slide.setKeyValueAt(1.0, self._hidden_y())
+        self.slide.setKeyValues([(0.0, self.pill_y), (0.3, self._dip_y()), (1.0, self._hidden_y())])
         self.slide.setEasingCurve(QEasingCurve.InOutSine)
         self.slide.start()
 
     def _slid(self, value) -> None:
+        if value is None:
+            return
         self.pill_y = float(value)
         self.update()
 

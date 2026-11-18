@@ -245,6 +245,10 @@ def test_pill_slides_in_with_bounce_and_out_past_the_edge(app):
 
     for position in ("top", "bottom"):
         o = overlay.Overlay(position)
+        errors = []
+        import sys
+        old_hook = sys.excepthook
+        sys.excepthook = lambda *a: errors.append(a)
         ys = []
         o.slide.valueChanged.connect(lambda v: ys.append(float(v)))
         o.set_state("recording", 0.5)
@@ -267,3 +271,7 @@ def test_pill_slides_in_with_bounce_and_out_past_the_edge(app):
         run(60)
         o.set_state("recording", 0.5)
         assert not o.leaving
+        run(overlay.ENTER_MS + 150)
+        assert abs(o.pill_y - rest) < 0.5  # no leftover dip key frame
+        sys.excepthook = old_hook
+        assert not errors
