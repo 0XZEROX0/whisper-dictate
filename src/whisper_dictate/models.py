@@ -28,7 +28,7 @@ class ModelInfo:
             return self.title
         base = self.name.removesuffix(".en")
         if base in _TITLES:
-            return _TITLES[base]
+            return _TITLES[base] + (" (English)" if self.english_only else "")
         return base.removeprefix("faster-whisper-").replace("-", " ").replace("_", " ").title()
 
     @property

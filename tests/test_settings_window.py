@@ -137,8 +137,8 @@ def test_download_progress_is_shown(app, cfg_home):
     panel = settings.DownloadsPanel(Tracker(scanner=lambda: state["items"]))
     panel.refresh()
     assert not panel.isHidden()
-    title, bar, info = panel.rows["k"]
-    assert title.text() == "Downloading Egyptian Arabic  52%"
+    head, bar, info = panel.rows["k"]
+    assert head.title.text() == "Downloading Egyptian Arabic  52%"
     assert "779 MB left" in info.text()
     state["items"] = []
     panel.refresh()
@@ -157,3 +157,23 @@ def test_overlay_shows_download_while_starting(app):
     o.set_state("idle", 0.0)
     o._poll_download()
     assert o.download is None and not o._shown()
+
+
+def test_models_card_lists_and_deletes(app, cfg_home, monkeypatch):
+    from whisper_dictate.downloads import LocalModel
+    from whisper_dictate.gui import settings
+
+    items = [LocalModel("/a", "small", "Small", 484_000_000, False, False, "faster-whisper"),
+             LocalModel("/b", "large-v3", "Large", 517_000_000, True, False, "faster-whisper")]
+    card = settings.ModelsCard(in_use=lambda: {"small"}, lister=lambda: list(items))
+    texts = [w.text() for w in card.findChildren(QtWidgets.QLabel)]
+    assert "484 MB  ·  In use" in texts and "517 MB  ·  Unfinished download" in texts
+    buttons = card.findChildren(QtWidgets.QPushButton)
+    assert [b.isEnabled() for b in buttons] == [False, True]  # can't delete the model in use
+    got = []
+    card.delete.connect(got.append)
+    [b for b in card.findChildren(QtWidgets.QPushButton) if b.isEnabled()][0].click()
+    assert got[0].name == "large-v3"
+    items.pop()
+    card.refresh()
+    assert len(card.models) == 1

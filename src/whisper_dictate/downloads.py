@@ -105,7 +105,8 @@ def scan() -> list[tuple[str, str, int, str, int]]:
     if cache.is_dir():
         for repo_dir in cache.glob("models--*"):
             blobs = repo_dir / "blobs"
-            if not any(blobs.glob("*.incomplete")):
+            pending = list(blobs.glob("*.incomplete"))
+            if not pending or not is_active(repo_dir, pending):
                 continue
             repo = repo_dir.name.removeprefix("models--").replace("--", "/", 1)
             found.append((str(repo_dir), _pretty_repo(repo), _size(blobs.iterdir()), repo, 0))
@@ -118,6 +119,8 @@ def scan() -> list[tuple[str, str, int, str, int]]:
             if not pending and not d.name.endswith(".partial"):
                 continue
             if not pending and d.name.endswith(".partial") and (d / "model.bin").exists():
+                continue
+            if not is_active(d, pending or [f for f in d.rglob("*") if f.is_file()]):
                 continue
             info = {}
             try:
@@ -183,3 +186,144 @@ class Tracker:
             if key not in seen:
                 del self._last[key]
         return result
+
+
+# -- models on disk -------------------------------------------------------------
+STALE_SECONDS = 60
+
+
+def writers(path: Path) -> list[int]:
+    """PIDs of processes that have a file under `path` open."""
+    root = str(path)
+    pids = []
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            for fd in (proc / "fd").iterdir():
+                try:
+                    if os.readlink(fd).startswith(root):
+                        pids.append(int(proc.name))
+                        break
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return pids
+
+
+def _newest_mtime(paths) -> float:
+    newest = 0.0
+    for f in paths:
+        try:
+            newest = max(newest, f.stat().st_mtime)
+        except OSError:
+            pass
+    return newest
+
+
+def is_active(path: Path, partial_files: list[Path], now: float | None = None) -> bool:
+    """A partial download counts as running if it grew recently or a process has it open."""
+    now = time.time() if now is None else now
+    if partial_files and now - _newest_mtime(partial_files) < STALE_SECONDS:
+        return True
+    return bool(writers(path))
+
+
+@dataclass
+class LocalModel:
+    key: str         # the path that holds it; deleting removes this
+    name: str        # model name as the config uses it, e.g. "large-v3-turbo"
+    label: str       # what to show
+    size: int
+    partial: bool
+    downloading: bool
+    kind: str        # "faster-whisper", "custom" or "whisper.cpp"
+
+
+def _hub_model_name(repo: str) -> str:
+    return repo.split("/")[-1].removeprefix("faster-whisper-").removesuffix("-ct2")
+
+
+def local_models() -> list[LocalModel]:
+    from .models import ModelInfo
+
+    found = []
+    cache = hub_cache()
+    if cache.is_dir():
+        for repo_dir in sorted(cache.glob("models--*")):
+            repo = repo_dir.name.removeprefix("models--").replace("--", "/", 1)
+            if "whisper" not in repo.lower():
+                continue  # leave other apps' models alone
+            blobs = list((repo_dir / "blobs").glob("*")) if (repo_dir / "blobs").is_dir() else []
+            pending = [b for b in blobs if b.name.endswith(".incomplete")]
+            complete = any((snap / "model.bin").exists() for snap in (repo_dir / "snapshots").glob("*"))
+            name = _hub_model_name(repo)
+            found.append(LocalModel(str(repo_dir), name, ModelInfo(name, "", "").label, _size(blobs),
+                                    bool(pending) or not complete,
+                                    bool(pending) and is_active(repo_dir, pending), "faster-whisper"))
+    root = data_dir() / "models"
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if d.is_file() and d.name.startswith("ggml-") and d.suffix == ".bin":
+                name = d.stem.removeprefix("ggml-")
+                found.append(LocalModel(str(d), name, f"{ModelInfo(name, '', '').label} (GPU)",
+                                        _size([d]), False, False, "whisper.cpp"))
+            elif d.is_file() and d.name.startswith("ggml-") and d.name.endswith(".part"):
+                found.append(LocalModel(str(d), d.name, d.name, _size([d]), True,
+                                        is_active(d, [d]), "whisper.cpp"))
+            elif d.is_dir():
+                files = [f for f in d.rglob("*")]
+                pending = [f for f in files if f.name.endswith(".incomplete")]
+                info = {}
+                try:
+                    info = json.loads((d / "whisper-dictate.json").read_text())
+                except (OSError, ValueError):
+                    pass
+                name = d.name.removesuffix(".partial")
+                partial = bool(pending) or d.name.endswith(".partial") or not (d / "model.bin").exists()
+                found.append(LocalModel(str(d), name, info.get("label") or ModelInfo(name, "", "").label,
+                                        _size(files), partial,
+                                        partial and is_active(d, pending or files), "custom"))
+    return found
+
+
+def models_in_use(cfg) -> set[str]:
+    from .engines import uses_language_profiles
+
+    if cfg.engine == "whisper-cpp":
+        return {cfg.model}
+    if uses_language_profiles(cfg):
+        used = {cfg.model_for(lang) for lang in cfg.detect_languages}
+        if len(cfg.detect_languages) > 1:
+            small = [m for m in used if m in ("tiny", "base", "small")]
+            used.add(small[0] if small else cfg.detector_model)
+        return used
+    return {cfg.model}
+
+
+def delete_model(path: str, stop_service=None) -> None:
+    """Delete a model or partial download, stopping whatever is downloading it."""
+    import shutil
+    import signal
+
+    p = Path(path)
+    for pid in writers(p):
+        if pid == os.getpid():
+            continue
+        try:
+            cmd = (Path("/proc") / str(pid) / "cmdline").read_bytes().replace(b"\0", b" ").decode()
+        except OSError:
+            cmd = ""
+        if "whisper-dictate" in cmd and " daemon" in cmd and stop_service:
+            stop_service()  # systemd would just restart it
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+    deadline = time.time() + 3
+    while writers(p) and time.time() < deadline:
+        time.sleep(0.1)
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+    elif p.exists():
+        p.unlink()

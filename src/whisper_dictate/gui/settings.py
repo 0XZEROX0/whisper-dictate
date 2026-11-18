@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__, updater
-from ..downloads import Tracker
+from ..downloads import LocalModel, Tracker, delete_model, human_size, local_models, models_in_use
 from ..config import config_path, load_config, save_config
 from ..engines import choose_engine_name, cuda_available
 from ..ipc import send_command
@@ -339,6 +339,8 @@ class LanguageProfiles(QWidget):
 class DownloadsPanel(QFrame):
     """Shows model downloads in progress: how much is done, what's left, and how long."""
 
+    cancel = Signal(str)
+
     def __init__(self, tracker: Tracker | None = None):
         super().__init__()
         self.setObjectName("card")
@@ -346,7 +348,7 @@ class DownloadsPanel(QFrame):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(18, 14, 18, 14)
         self.box.setSpacing(6)
-        self.rows: dict[str, tuple[QLabel, QProgressBar, QLabel]] = {}
+        self.rows: dict[str, tuple[QWidget, QProgressBar, QLabel]] = {}
         self.hide()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -366,17 +368,28 @@ class DownloadsPanel(QFrame):
                     w.deleteLater()
         for d in items:
             if d.key not in self.rows:
+                head = QWidget()
+                hl = QHBoxLayout(head)
+                hl.setContentsMargins(0, 0, 0, 0)
                 title = QLabel()
                 title.setStyleSheet("font-weight: 600;")
+                stop = QPushButton("Cancel")
+                stop.setObjectName("ghost")
+                stop.setCursor(Qt.PointingHandCursor)
+                stop.clicked.connect(lambda _=False, k=d.key: self.cancel.emit(k))
+                hl.addWidget(title, 1)
+                hl.addWidget(stop)
+                head.title = title
                 bar = QProgressBar()
                 bar.setTextVisible(False)
                 bar.setFixedHeight(8)
                 info = QLabel()
                 info.setObjectName("hint")
-                for w in (title, bar, info):
+                for w in (head, bar, info):
                     self.box.addWidget(w)
-                self.rows[d.key] = (title, bar, info)
-            title, bar, info = self.rows[d.key]
+                self.rows[d.key] = (head, bar, info)
+            head, bar, info = self.rows[d.key]
+            title = head.title
             frac = d.fraction
             pct = f"  {frac * 100:.0f}%" if frac is not None else ""
             title.setText(f"Downloading {d.name}{pct}")
@@ -387,6 +400,94 @@ class DownloadsPanel(QFrame):
                 bar.setValue(int(frac * 1000))
             info.setText(d.summary())
         self.setVisible(bool(items))
+
+
+class ModelsCard(QFrame):
+    """Every model on disk, with its size and a Delete button."""
+
+    delete = Signal(object)
+
+    def __init__(self, in_use=lambda: set(), lister=local_models):
+        super().__init__()
+        self.setObjectName("card")
+        self.in_use, self.lister = in_use, lister
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(18, 8, 18, 8)
+        self.box.setSpacing(0)
+        self.models: list[LocalModel] = []
+        self._signature = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(3000)
+        self.refresh()
+
+    def refresh(self) -> None:
+        try:
+            models = self.lister()
+        except Exception:
+            models = []
+        used = self.in_use()
+        sig = [(m.key, m.partial, m.downloading, m.size // 10_000_000, m.name in used) for m in models]
+        if sig == self._signature:
+            return
+        self._signature = sig
+        self.models = models
+        while self.box.count():
+            w = self.box.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        if not models:
+            empty = QLabel("No models downloaded yet. The one you pick is downloaded when you save.")
+            empty.setObjectName("hint")
+            empty.setWordWrap(True)
+            empty.setContentsMargins(0, 12, 0, 12)
+            self.box.addWidget(empty)
+            return
+        total = sum(m.size for m in models)
+        for i, m in enumerate(models):
+            if i:
+                line = QFrame()
+                line.setObjectName("divider")
+                self.box.addWidget(line)
+            row = QWidget()
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(0, 10, 0, 10)
+            lay.setSpacing(12)
+            text = QVBoxLayout()
+            text.setSpacing(2)
+            t = QLabel(m.label + ("  (whisper.cpp)" if m.kind == "whisper.cpp" and "(GPU)" not in m.label else ""))
+            t.setStyleSheet("font-weight: 600;")
+            if m.downloading:
+                status = "Downloading"
+            elif m.partial:
+                status = "Unfinished download"
+            elif m.name in used:
+                status = "In use"
+            else:
+                status = "Downloaded"
+            d = QLabel(f"{human_size(m.size)}  ·  {status}")
+            d.setObjectName("hint")
+            if m.partial and not m.downloading:
+                d.setStyleSheet(f"color: {theme.AMBER};")
+            elif status == "In use":
+                d.setStyleSheet(f"color: {theme.GREEN};")
+            text.addWidget(t)
+            text.addWidget(d)
+            lay.addLayout(text, 1)
+            btn = QPushButton("Cancel" if m.downloading else "Delete")
+            btn.setObjectName("ghost")
+            btn.setCursor(Qt.PointingHandCursor)
+            if status == "In use":
+                btn.setEnabled(False)
+                btn.setToolTip("Pick another model and save first")
+            btn.clicked.connect(lambda _=False, model=m: self.delete.emit(model))
+            lay.addWidget(btn)
+            self.box.addWidget(row)
+        foot = QLabel(f"{human_size(total)} in total")
+        foot.setObjectName("hint")
+        foot.setContentsMargins(0, 4, 0, 10)
+        self.box.addWidget(foot)
 
 
 def section(title: str) -> QLabel:
@@ -546,6 +647,7 @@ class SettingsWindow(QWidget):
 
         # Hero: shortcut
         self.downloads = DownloadsPanel()
+        self.downloads.cancel.connect(self._cancel_download)
         col.addWidget(self.downloads)
 
         hero = QFrame()
@@ -647,6 +749,12 @@ class SettingsWindow(QWidget):
         self.notifications.currentIndexChanged.connect(self._mark)
         card.add_row("Notifications", "Desktop popups.", self.notifications, wide=True)
         col.addWidget(card)
+
+        # Models on disk
+        col.addWidget(section("Models on this computer"))
+        self.models_card = ModelsCard(in_use=lambda: models_in_use(self.cfg))
+        self.models_card.delete.connect(self._delete_model)
+        col.addWidget(self.models_card)
 
         # Updates
         col.addWidget(section("Updates"))
@@ -900,6 +1008,30 @@ class SettingsWindow(QWidget):
 
         run_in_thread(self, download_whisper_cpp_model, model,
                       on_done=finished, on_failed=failed, on_progress=dialog.setValue)
+
+    def _cancel_download(self, key: str) -> None:
+        match = [m for m in self.models_card.models if m.key == key]
+        self._delete_model(match[0] if match else LocalModel(key, key, "this download", 0, True, True, ""))
+
+    def _delete_model(self, model: LocalModel) -> None:
+        verb = "Cancel the download of" if model.downloading else "Delete"
+        extra = ""
+        if model.downloading and model.name in models_in_use(self.cfg):
+            extra = ("\n\nThe app is downloading it because it's selected, so the app will stop. "
+                     "Pick a downloaded model and Save to start it again.")
+        answer = QMessageBox.question(
+            self, "Delete model", f"{verb} {model.label} and free {human_size(model.size)}?{extra}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+
+        def done(_result) -> None:
+            self.models_card._signature = None
+            self.models_card.refresh()
+            self.downloads.refresh()
+
+        run_in_thread(self, delete_model, model.key, lambda: self._systemctl("stop"),
+                      on_done=done, on_failed=lambda msg: QMessageBox.warning(self, "Delete model", msg))
 
     def _restart(self) -> None:
         self.dirty_label.setText("Saved. Restarting dictation with the new settings…")

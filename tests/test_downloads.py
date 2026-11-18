@@ -49,3 +49,52 @@ def test_formatting():
     assert human_size(1_618_000_000) == "1.62 GB"
     assert human_size(839_000_000) == "839 MB"
     assert human_time(30) == "30 s" and human_time(300) == "5 min" and human_time(4000) == "1 h 7 min"
+
+
+def _old(path, seconds=600):
+    import os
+    import time
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_local_models_partial_stale_and_delete(tmp_path, monkeypatch):
+    from whisper_dictate.config import Config
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    hub = tmp_path / "hub"
+    small = hub / "models--Systran--faster-whisper-small"
+    (small / "blobs").mkdir(parents=True)
+    (small / "blobs" / "a").write_bytes(b"x" * 100)
+    (small / "snapshots" / "rev").mkdir(parents=True)
+    (small / "snapshots" / "rev" / "model.bin").symlink_to(small / "blobs" / "a")
+    big = hub / "models--Systran--faster-whisper-large-v3"
+    (big / "blobs").mkdir(parents=True)
+    stale = big / "blobs" / "b.incomplete"
+    stale.write_bytes(b"x" * 50)
+    _old(stale)
+    other = hub / "models--bert-base-uncased"
+    (other / "blobs").mkdir(parents=True)
+    models = tmp_path / "data" / "whisper-dictate" / "models"
+    models.mkdir(parents=True)
+    (models / "ggml-small.en.bin").write_bytes(b"x" * 10)
+
+    found = {m.name: m for m in downloads.local_models()}
+    assert set(found) == {"small", "large-v3", "small.en"}  # other apps' models are left out
+    assert not found["small"].partial and found["small"].label == "Small"
+    assert found["large-v3"].partial and not found["large-v3"].downloading
+    assert found["small.en"].kind == "whisper.cpp"
+
+    # A stalled partial is not reported as a running download.
+    assert downloads.scan() == []
+
+    assert downloads.models_in_use(Config(model="small")) == {"small"}
+    cfg = Config(language="auto", detect_languages=["en", "ar"],
+                 language_models={"en": "small.en", "ar": "faster-whisper-egyptian-turbo"})
+    assert downloads.models_in_use(cfg) == {"small.en", "faster-whisper-egyptian-turbo", "base"}
+
+    downloads.delete_model(found["large-v3"].key)
+    downloads.delete_model(found["small.en"].key)
+    assert not big.exists() and not (models / "ggml-small.en.bin").exists()
+    assert {m.name for m in downloads.local_models()} == {"small"}
