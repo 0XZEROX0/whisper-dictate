@@ -300,9 +300,8 @@ def models_in_use(cfg) -> set[str]:
         return {cfg.model}
     if uses_language_profiles(cfg):
         used = {cfg.model_for(lang) for lang in cfg.detect_languages}
-        if len(cfg.detect_languages) > 1:
-            small = [m for m in used if m in ("tiny", "base", "small")]
-            used.add(small[0] if small else cfg.detector_model)
+        if len(cfg.detect_languages) > 1 and all(m.endswith(".en") for m in used):
+            used.add(cfg.detector_model)
         return used
     return {cfg.model}
 

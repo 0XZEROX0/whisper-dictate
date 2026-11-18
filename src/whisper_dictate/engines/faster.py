@@ -55,15 +55,14 @@ class FasterWhisperEngine(Engine):
             self.device, self.compute_type = "cpu", "int8"
             self._model = WhisperModel(resolve_model(self.model_name), device="cpu", compute_type="int8")
 
-    def detect_language(self, audio: np.ndarray, allowed: list[str]) -> tuple[str, float]:
-        """Most likely language among `allowed`, with its probability."""
+    def detect_language(self, audio: np.ndarray, allowed: list[str]) -> dict[str, float]:
+        """Probability of each language in `allowed`."""
         self.load()
         # transcribe() detects the language up front and returns lazily, so
         # not iterating the segments skips the actual decoding.
         _segments, info = self._model.transcribe(audio, language=None, vad_filter=True)
         probs = dict(info.all_language_probs or [(info.language, info.language_probability)])
-        best = max(allowed, key=lambda lang: probs.get(lang, 0.0))
-        return best, probs.get(best, 0.0)
+        return {lang: probs.get(lang, 0.0) for lang in allowed}
 
     def transcribe(self, audio: np.ndarray, sample_rate: int, language: str | None = None) -> str:
         if sample_rate != 16000:

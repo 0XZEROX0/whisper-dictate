@@ -56,7 +56,11 @@ def test_multi_language_engine_routes_to_each_languages_model():
 
         def detect_language(self, audio, allowed):
             calls.append(("detect", self.model, tuple(allowed)))
-            return ("ar", 0.93) if audio[0] > 0 else ("en", 0.88)
+            if audio[0] > 0:
+                return {"en": 0.02, "ar": 0.93}
+            if audio[0] < -1:  # unsure: Egyptian heard as something else entirely
+                return {"en": 0.13, "ar": 0.08}
+            return {"en": 0.88, "ar": 0.01}
 
         def transcribe(self, audio, sr, language=None):
             calls.append(("transcribe", self.model, language))
@@ -71,19 +75,22 @@ def test_multi_language_engine_routes_to_each_languages_model():
     assert uses_language_profiles(cfg)
     eng = MultiLanguageEngine(cfg, make_engine=make)
     eng.load()
-    assert set(made) == {"base", "small.en", "large-v3-turbo"}  # base detects
+    assert set(made) == {"small.en", "large-v3-turbo"}  # the big model detects
     assert all(e.loaded for e in made.values())
 
     assert eng.transcribe(np.ones(16000, dtype=np.float32), 16000) == "large-v3-turbo:ar"
     assert eng.transcribe(-np.ones(16000, dtype=np.float32), 16000) == "small.en:en"
-    assert calls[0] == ("detect", "base", ("en", "ar"))
+    assert calls[0] == ("detect", "large-v3-turbo", ("en", "ar"))
     assert eng.last_language == "en"
+    # Unsure: goes to the multilingual Arabic model, not the English-only one.
+    assert eng.transcribe(np.full(10, -2.0, dtype=np.float32), 16000) == "large-v3-turbo:ar"
 
-    # A chosen small multilingual model doubles as the detector.
+    # Only English-only models chosen: the small detector is used.
     made.clear()
-    cfg2 = Config(language="auto", detect_languages=["en", "ar"], language_models={"ar": "small"})
+    cfg2 = Config(language="auto", detect_languages=["en", "fr"],
+                  language_models={"en": "small.en", "fr": "small"})
     MultiLanguageEngine(cfg2, make_engine=make).load()
-    assert "base" not in made
+    assert set(made) == {"small.en", "small"}
 
     # One language: no detection at all.
     calls.clear()

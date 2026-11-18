@@ -74,7 +74,8 @@ check_updates = {check_updates}
 # its own model, e.g. a fast one for English and a big one for Arabic.
 detect = {detect_languages}
 models = {language_models}
-# Small multilingual model used only to recognise which language you speak.
+# Recognises which language you speak only if all chosen models are English-only;
+# otherwise the strongest multilingual model you picked does it.
 detector_model = {detector_model}
 """
 

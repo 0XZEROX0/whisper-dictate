@@ -12,6 +12,9 @@ from .base import Engine
 
 log = logging.getLogger(__name__)
 
+# Below this share (among your chosen languages) the guess counts as unsure.
+UNSURE = 0.7
+
 
 class MultiLanguageEngine(Engine):
     """Detect which of the chosen languages is spoken, then use its model.
@@ -40,12 +43,22 @@ class MultiLanguageEngine(Engine):
 
     @property
     def detector(self) -> Engine:
-        # Reuse a chosen multilingual model if there is one, else the small detector.
+        """The strongest multilingual model you picked: it's loaded anyway, and
+        small models often mistake dialects (e.g. Egyptian Arabic) for other languages."""
+        rank = {"tiny": 0, "base": 1, "small": 2, "medium": 3}
+        candidates = [self.cfg.model_for(lang) for lang in self.languages]
+        multi = [m for m in candidates if not m.endswith(".en")]
+        if not multi:
+            return self._engine(self.cfg.detector_model)
+        return self._engine(max(multi, key=lambda m: rank.get(m, 4)))
+
+    def _fallback_language(self) -> str | None:
+        """Where audio goes when detection is unsure: a language whose model also
+        understands other languages (better than forcing it through an English-only model)."""
         for lang in self.languages:
-            model = self.cfg.model_for(lang)
-            if not model.endswith(".en") and model in ("tiny", "base", "small"):
-                return self._engine(model)
-        return self._engine(self.cfg.detector_model)
+            if lang != "en" and not self.cfg.model_for(lang).endswith(".en"):
+                return lang
+        return None
 
     def load(self) -> None:
         if len(self.languages) > 1:
@@ -58,8 +71,18 @@ class MultiLanguageEngine(Engine):
             lang = self.languages[0]
         else:
             t0 = time.monotonic()
-            lang, prob = self.detector.detect_language(audio, self.languages)
-            log.info("detected %s (%.0f%%) in %.2fs", lang, prob * 100, time.monotonic() - t0)
+            probs = self.detector.detect_language(audio, self.languages)
+            lang = max(self.languages, key=lambda code: probs.get(code, 0.0))
+            total = sum(probs.values()) or 1.0
+            share = probs.get(lang, 0.0) / total  # confidence among your languages only
+            fallback = self._fallback_language()
+            note = ""
+            if share < UNSURE and fallback and fallback != lang:
+                note = f", unsure so using {fallback}"
+                lang = fallback
+            log.info("language %s (%s)%s in %.2fs", lang,
+                     ", ".join(f"{k} {v * 100:.0f}%" for k, v in probs.items()), note,
+                     time.monotonic() - t0)
         self.last_language = lang
         engine = self._engine(self.cfg.model_for(lang))
         return engine.transcribe(audio, sample_rate, language=lang)
