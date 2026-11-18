@@ -751,8 +751,8 @@ class SettingsWindow(QWidget):
         self.paste.toggled.connect(self._mark)
         card.add_row("Insert all at once", "Pastes the whole text instantly instead of typing it letter "
                      "by letter. Your clipboard is put back afterwards.", self.paste)
-        self.live = combo_box([("off", "Off"), ("type", "Type into the window as I speak"),
-                               ("preview", "Show words in the floating bar")])
+        self.live = combo_box([("off", "Off"), ("type", "Type as I speak"),
+                               ("preview", "Show in the floating bar")])
         self.live.currentIndexChanged.connect(self._live_changed)
         self.live_row = card.add_row("Live transcription", " ", self.live, wide=True)
         col.addWidget(card)
