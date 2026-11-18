@@ -361,3 +361,21 @@ def test_reload_applies_light_settings(tmp_path, monkeypatch):
     assert d.handle("reload") == "reloaded"
     assert d.cfg.press_enter and d.cfg.live == "type" and typer.paste
     assert d.cfg.model != "large-v3"  # heavy settings wait for a restart
+
+
+def test_reload_goes_through_the_socket(tmp_path, monkeypatch):
+    from whisper_dictate.config import save_config
+    from whisper_dictate.ipc import COMMANDS
+
+    assert {"toggle", "start", "stop", "cancel", "status", "reload", "quit"} <= set(COMMANDS)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_config(Config(press_enter=True))
+    d, _typer = make()
+    server = IPCServer(d.handle, path=tmp_path / "s.sock")
+    server.bind()
+    server.start()
+    try:
+        assert send_command("reload", path=tmp_path / "s.sock") == "reloaded"
+        assert d.cfg.press_enter
+    finally:
+        server.close()

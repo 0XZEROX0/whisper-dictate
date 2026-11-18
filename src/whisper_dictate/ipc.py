@@ -12,7 +12,7 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
-COMMANDS = ("toggle", "start", "stop", "cancel", "status", "quit")
+COMMANDS = ("toggle", "start", "stop", "cancel", "status", "reload", "quit")
 STREAM_COMMAND = "subscribe"
 
 
