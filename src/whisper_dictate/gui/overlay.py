@@ -41,9 +41,27 @@ COLORS = {
 }
 WIDTH, HEIGHT, MARGIN = 236, 52, 56
 MAX_WIDTH = 760  # the pill grows to show live text up to this width
+PAD_LEFT, GAP, PAD_RIGHT = 20, 12, 24  # around the icon and the label
+ICON_W = {"recording": 60, "transcribing": 40, "loading": 40, "starting": 40, "done": 22}
+
+
+def _icon_w(state: str) -> int:
+    return ICON_W.get(state, 18)
+
+
+def _text_x(state: str) -> int:
+    return PAD_LEFT + _icon_w(state) + GAP
+MIN_WIDTH = 110
 DIP = 22         # room for the little dip toward the screen before it slides away
 ENTER_MS, EXIT_MS = 560, 480
 BARS = 9
+
+
+def _font() -> QFont:
+    font = QFont()
+    font.setPixelSize(15)
+    font.setWeight(QFont.DemiBold)
+    return font
 
 
 def _tail(text: str, metrics: QFontMetrics, width: float) -> str:
@@ -148,14 +166,26 @@ class Overlay(QWidget):
         if text == self.text:
             return
         self.text = text
-        width = WIDTH
-        if text:
-            font = QFont()
-            font.setPixelSize(15)
-            font.setWeight(QFont.DemiBold)
-            width = min(max(WIDTH, QFontMetrics(font).horizontalAdvance(text) + 112), MAX_WIDTH)
-        self.target_w = float(width)
+        self.target_w = self._fit_width()
         self.update()
+
+    def _label(self) -> str:
+        """What the pill says right now (without the animated dots)."""
+        d = self.download if self.state in ("starting", "loading") else None
+        if d is not None:
+            frac = d.fraction
+            return f"Downloading {frac * 100:.0f}%" if frac is not None else "Downloading…"
+        if self.state == "recording" and self.text:
+            return self.text
+        return LABELS.get(self.state, "")
+
+    def _fit_width(self) -> float:
+        """Snug around the icon and the label, so there's no empty space."""
+        label = self._label()
+        if self.state == "transcribing":
+            label += "..."  # room for the animated dots, so it doesn't wobble
+        width = _text_x(self.state) + QFontMetrics(_font()).horizontalAdvance(label) + PAD_RIGHT
+        return float(min(max(width, MIN_WIDTH), MAX_WIDTH))
 
     def _shown(self) -> bool:
         return self.state in LABELS or (self.state in ("starting", "loading") and self.download is not None)
@@ -168,6 +198,9 @@ class Overlay(QWidget):
         self.state = state
         if state in ("starting", "loading"):
             self._poll_download()
+        self.target_w = self._fit_width()
+        if not self.isVisible():
+            self.pill_w = self.target_w  # appear at the right size
         self._update_visibility()
         self.update()
 
@@ -221,7 +254,8 @@ class Overlay(QWidget):
         # Fast attack, slow release, so the bars feel alive but not jittery.
         k = 0.5 if self.level > self.smooth else 0.12
         self.smooth += (self.level - self.smooth) * k
-        self.pill_w += (self.target_w - self.pill_w) * 0.18  # widen smoothly for live text
+        self.target_w = self._fit_width()
+        self.pill_w += (self.target_w - self.pill_w) * 0.2  # resize smoothly between states
         self.update()
 
     # -- drawing --------------------------------------------------------
@@ -256,7 +290,8 @@ class Overlay(QWidget):
 
         color = COLORS.get(self.state, QColor("#ffffff"))
         t = time.monotonic() - self.t0
-        icon = QRectF(16, 0, 64, HEIGHT)
+        icon = QRectF(PAD_LEFT, 0, _icon_w(self.state), HEIGHT)
+        TEXT_X = _text_x(self.state)
         if self.state == "recording":
             self._draw_bars(p, icon, color, t)
         elif self.state in ("transcribing", "loading", "starting"):
@@ -267,26 +302,23 @@ class Overlay(QWidget):
             self._draw_dash(p, icon, color)
 
         p.setPen(QColor(240, 240, 245))
-        font = QFont()
-        font.setPixelSize(15)
-        font.setWeight(QFont.DemiBold)
+        font = _font()
         p.setFont(font)
-        label = LABELS.get(self.state, "")
+        label = self._label()
         if self.state == "recording" and self.text:
-            label = _tail(self.text, QFontMetrics(font), W - 112)
+            label = _tail(self.text, QFontMetrics(font), W - TEXT_X - PAD_RIGHT)
         d = self.download if self.state in ("starting", "loading") else None
         if d is not None:
             frac = d.fraction
-            label = f"Downloading {frac * 100:.0f}%" if frac is not None else "Downloading…"
             if frac is not None:
-                track = QRectF(88, HEIGHT - 14, W - 112, 3)
+                track = QRectF(TEXT_X, HEIGHT - 14, W - TEXT_X - PAD_RIGHT, 3)
                 p.fillRect(track, QColor(255, 255, 255, 30))
                 p.fillRect(QRectF(track.x(), track.y(), track.width() * frac, 3), QColor(theme.ACCENT))
         if self.state == "transcribing":
             label += "." * (1 + int(t * 3) % 3)
         align = Qt.AlignRight if self.state == "recording" and _is_rtl(self.text) else Qt.AlignLeft
-        p.setClipRect(QRectF(86, 0, W - 100, HEIGHT))
-        p.drawText(QRectF(88, 0, W - 104, HEIGHT), Qt.AlignVCenter | align, label)
+        p.setClipRect(QRectF(TEXT_X - 2, 0, W - TEXT_X - PAD_RIGHT + 8, HEIGHT))
+        p.drawText(QRectF(TEXT_X, 0, W - TEXT_X - PAD_RIGHT + 4, HEIGHT), Qt.AlignVCenter | align, label)
         p.setClipping(False)
 
     def _draw_bars(self, p: QPainter, box: QRectF, color: QColor, t: float) -> None:
@@ -311,7 +343,7 @@ class Overlay(QWidget):
         for i in range(3):
             phase = t * 6 - i * 0.7
             dy = -5 * max(0.0, math.sin(phase))
-            p.drawEllipse(QRectF(box.x() + 14 + i * 13, cy - 4 + dy, 8, 8))
+            p.drawEllipse(QRectF(box.x() + 2 + i * 14, cy - 4 + dy, 8, 8))
 
     def _draw_check(self, p: QPainter, box: QRectF, color: QColor) -> None:
         pen = QPen(color, 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)

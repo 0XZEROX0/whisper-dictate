@@ -190,7 +190,15 @@ def test_overlay_grows_for_live_text(app):
     o.set_state("recording", 0.4, "ده أول تجربة للعربي المصري")
     o.pill_pixmap()
     o.set_state("transcribing", 0.0)
-    assert o.target_w == overlay.WIDTH and o.text == ""
+    assert o.target_w < overlay.WIDTH and o.text == ""
+    # Snug in every state: short labels make a short pill.
+    widths = {}
+    for state in ("recording", "transcribing", "done", "empty"):
+        o.set_state(state, 0.0)
+        widths[state] = o.target_w
+    assert widths["done"] < widths["recording"] < widths["transcribing"]
+    assert widths["done"] == min(widths.values())
+    assert widths["done"] >= overlay.MIN_WIDTH
     assert overlay._is_rtl("ده hello") and not overlay._is_rtl("hello ده")
 
 
